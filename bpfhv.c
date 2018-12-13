@@ -25,7 +25,13 @@ static int
 test_bpf_program(void)
 {
 	struct bpf_prog *prog;
-	unsigned int insn_count = 3;
+	unsigned int insn_count;
+	struct bpf_insn insns[] = {
+		BPF_MOV64_IMM(BPF_REG_2, 20),
+		BPF_MOV64_IMM(BPF_REG_3, 30),
+	};
+
+	insn_count = sizeof(insns) / sizeof(insns[0]);
 
 	prog = bpf_prog_alloc(bpf_prog_size(insn_count), GFP_USER);
 	if (!prog) {
