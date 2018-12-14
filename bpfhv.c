@@ -23,7 +23,8 @@
 #include <linux/bpf.h>		/* struct bpf_prog_aux */
 
 static int
-test_bpf_program(struct bpf_insn *insns, unsigned int insn_count)
+test_bpf_program(const char *progname, struct bpf_insn *insns,
+		unsigned int insn_count)
 {
 	struct bpf_prog *prog;
 	int ret;
@@ -38,7 +39,8 @@ test_bpf_program(struct bpf_insn *insns, unsigned int insn_count)
 	prog->gpl_compatible = 1;
 	prog->type = BPF_PROG_TYPE_UNSPEC;
 	prog->aux->load_time = ktime_get_boot_ns();
-	strlcpy(prog->aux->name, "bpfhv", sizeof(prog->aux->name));
+	strlcpy(prog->aux->name, "bpfhv-", sizeof(prog->aux->name));
+	strlcat(prog->aux->name, progname, sizeof(prog->aux->name));
 
 	/* Replacement for bpf_check(). */
 	prog->aux->stack_depth = MAX_BPF_STACK;
@@ -49,7 +51,7 @@ test_bpf_program(struct bpf_insn *insns, unsigned int insn_count)
 	}
 
 	ret = BPF_PROG_RUN(prog, /*ctx=*/NULL);
-	printk("BPF_PROG_RUN returns %d\n", ret);
+	printk("BPF_PROG_RUN(%s) returns %d\n", prog->aux->name, ret);
 
 	bpf_prog_free(prog);
 
@@ -67,7 +69,18 @@ test_bpf_programs(void)
 		BPF_EXIT_INSN(),
 	};
 
-	test_bpf_program(insns1, sizeof(insns1) / sizeof(insns1[0]));
+	struct bpf_insn insns2[] = {
+		BPF_MOV64_IMM(BPF_REG_8, 0),			/* R8 = 0 */
+		BPF_MOV64_IMM(BPF_REG_7, 0),			/* R7 = 0 */
+		BPF_ALU64_IMM(BPF_ADD, BPF_REG_7, 3),		/* l: R7 += 3 */
+		BPF_ALU64_REG(BPF_SUB, BPF_REG_7, BPF_REG_8),	/* R7 -= R8 */
+		BPF_ALU64_IMM(BPF_ADD, BPF_REG_8, 1),		/* R8 += 1 */
+		BPF_JMP_IMM(BPF_JLT, BPF_REG_8, 10, -4),	/* if R8 < 10 goto l */
+		BPF_MOV64_REG(BPF_REG_0, BPF_REG_7),		/* R0 = R7 */
+		BPF_EXIT_INSN(),
+	};
+	test_bpf_program("simple", insns1, sizeof(insns1) / sizeof(insns1[0]));
+	test_bpf_program("fixed-loop", insns2, sizeof(insns2) / sizeof(insns2[0]));
 }
 
 static int __init
