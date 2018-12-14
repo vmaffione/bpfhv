@@ -28,7 +28,7 @@ test_bpf_program(void)
 	struct bpf_prog *prog;
 	unsigned int insn_count;
 	struct bpf_insn insns[] = {
-		BPF_MOV64_IMM(BPF_REG_2, 20),	/* R2 = 20 */
+		BPF_MOV64_IMM(BPF_REG_2, 20),		/* R2 = 20 */
 		BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, 10),	/* R2 += 10 */
 		BPF_MOV64_REG(BPF_REG_3, BPF_REG_2),	/* R3 = R2 */
 		BPF_MOV64_REG(BPF_REG_0, BPF_REG_3),	/* R0 = R3 */

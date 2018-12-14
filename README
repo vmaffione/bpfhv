@@ -1,0 +1,5 @@
+Some goals:
+	- Have doorbells on separate pages (configurable stride?)
+	- Provider can evolve the medatata header (e.g., virtio-net)
+	  to balance between the needs of FreeBSD and Linux.
+	  (virtio-net is good for Linux, but not for FreeBSD).
