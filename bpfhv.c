@@ -34,7 +34,7 @@ test_bpf_program(void)
 		BPF_MOV64_REG(BPF_REG_0, BPF_REG_3),	/* R0 = R3 */
 		BPF_EXIT_INSN(),
 	};
-	int err;
+	int ret;
 
 	insn_count = sizeof(insns) / sizeof(insns[0]);
 
@@ -53,10 +53,13 @@ test_bpf_program(void)
 	/* Replacement for bpf_check(). */
 	prog->aux->stack_depth = MAX_BPF_STACK;
 
-	prog = bpf_prog_select_runtime(prog, &err);
-	if (err < 0) {
-		printk("bpf_prog_select_runtime() failed: %d\n", err);
+	prog = bpf_prog_select_runtime(prog, &ret);
+	if (ret < 0) {
+		printk("bpf_prog_select_runtime() failed: %d\n", ret);
 	}
+
+	ret = BPF_PROG_RUN(prog, /*ctx=*/NULL);
+	printk("BPF_PROG_RUN returns %d\n", ret);
 
 	bpf_prog_free(prog);
 
