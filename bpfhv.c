@@ -25,6 +25,7 @@
 
 struct bpfhv_info {
 	struct net_device *netdev;
+	struct napi_struct napi;
 };
 
 static int
@@ -48,6 +49,15 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
 	dev_kfree_skb_any(skb);
 	return NETDEV_TX_OK;
+}
+
+static int
+bpfhv_rx_poll(struct napi_struct *napi, int budget)
+{
+	struct bpfhv_info *bi = container_of(napi, struct bpfhv_info, napi);
+	(void)bi;
+
+	return 0;
 }
 
 static struct net_device_stats *
@@ -98,6 +108,8 @@ bpfhv_netdev_setup(struct bpfhv_info **bip)
 	netif_set_real_num_tx_queues(netdev, queue_pairs);
 	netif_set_real_num_rx_queues(netdev, queue_pairs);
 
+	netif_napi_add(netdev, &bi->napi, bpfhv_rx_poll, NAPI_POLL_WEIGHT);
+
 	ret = register_netdev(netdev);
 	if (ret) {
 		goto err_reg;
@@ -120,6 +132,7 @@ bpfhv_netdev_teardown(struct bpfhv_info *bi)
 	struct net_device *netdev = bi->netdev;
 
 	netif_carrier_off(netdev);
+	netif_napi_del(&bi->napi);
 	unregister_netdev(netdev);
 	free_netdev(netdev);
 }
