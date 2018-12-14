@@ -23,20 +23,10 @@
 #include <linux/bpf.h>		/* struct bpf_prog_aux */
 
 static int
-test_bpf_program(void)
+test_bpf_program(struct bpf_insn *insns, unsigned int insn_count)
 {
 	struct bpf_prog *prog;
-	unsigned int insn_count;
-	struct bpf_insn insns[] = {
-		BPF_MOV64_IMM(BPF_REG_2, 20),		/* R2 = 20 */
-		BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, 10),	/* R2 += 10 */
-		BPF_MOV64_REG(BPF_REG_3, BPF_REG_2),	/* R3 = R2 */
-		BPF_MOV64_REG(BPF_REG_0, BPF_REG_3),	/* R0 = R3 */
-		BPF_EXIT_INSN(),
-	};
 	int ret;
-
-	insn_count = sizeof(insns) / sizeof(insns[0]);
 
 	prog = bpf_prog_alloc(bpf_prog_size(insn_count), GFP_USER);
 	if (!prog) {
@@ -66,10 +56,25 @@ test_bpf_program(void)
 	return 0;
 }
 
+static void
+test_bpf_programs(void)
+{
+	struct bpf_insn insns1[] = {
+		BPF_MOV64_IMM(BPF_REG_2, 20),		/* R2 = 20 */
+		BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, 10),	/* R2 += 10 */
+		BPF_MOV64_REG(BPF_REG_3, BPF_REG_2),	/* R3 = R2 */
+		BPF_MOV64_REG(BPF_REG_0, BPF_REG_3),	/* R0 = R3 */
+		BPF_EXIT_INSN(),
+	};
+
+	test_bpf_program(insns1, sizeof(insns1) / sizeof(insns1[0]));
+}
+
 static int __init
 bpfhv_init(void)
 {
-	return test_bpf_program();
+	test_bpf_programs();
+	return 0;
 }
 
 static void __exit
