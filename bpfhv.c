@@ -43,6 +43,7 @@ test_bpf_program(void)
 		return -ENOMEM;
 	}
 	prog->len = insn_count;
+	memcpy(prog->insnsi, insns, bpf_prog_insn_size(prog));
 	atomic_set(&prog->aux->refcnt, 1);
 	prog->gpl_compatible = 1;
 	prog->type = BPF_PROG_TYPE_UNSPEC;
