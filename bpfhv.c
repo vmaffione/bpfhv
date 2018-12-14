@@ -21,7 +21,111 @@
 #include <linux/moduleparam.h>
 #include <linux/filter.h>	/* struct bpf_prog */
 #include <linux/bpf.h>		/* struct bpf_prog_aux */
+#include <linux/netdevice.h>
 
+struct bpfhv_info {
+	struct net_device *netdev;
+};
+
+static int
+bpfhv_open(struct net_device *netdev)
+{
+	struct bpfhv_info *bi = netdev_priv(netdev);
+
+	(void)bi;
+
+	return 0;
+}
+
+static int
+bpfhv_close(struct net_device *netdev)
+{
+	return 0;
+}
+
+static netdev_tx_t
+bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
+{
+	dev_kfree_skb_any(skb);
+	return NETDEV_TX_OK;
+}
+
+static struct net_device_stats *
+bpfhv_get_stats(struct net_device *netdev)
+{
+	return &netdev->stats;
+}
+
+static int
+bpfhv_change_mtu(struct net_device *netdev, int new_mtu)
+{
+	pr_info("%s: %s changing MTU from %d to %d\n",
+		__func__, netdev->name, netdev->mtu, new_mtu);
+	netdev->mtu = new_mtu;
+
+	return 0;
+}
+
+static const struct net_device_ops bpfhv_netdev_ops = {
+	.ndo_open			= bpfhv_open,
+	.ndo_stop			= bpfhv_close,
+	.ndo_start_xmit			= bpfhv_start_xmit,
+	.ndo_get_stats			= bpfhv_get_stats,
+	.ndo_change_mtu			= bpfhv_change_mtu,
+};
+
+static int
+bpfhv_netdev_setup(struct bpfhv_info **bip)
+{
+	const unsigned int queue_pairs = 1;
+	struct net_device *netdev;
+	struct bpfhv_info *bi;
+	int ret;
+
+	netdev = alloc_etherdev_mq(sizeof(*bi), queue_pairs);
+	if (!netdev) {
+		printk("Failed to allocate net device\n");
+		return -ENOMEM;
+	}
+
+	/* Cross-link data structures. */
+	SET_NETDEV_DEV(netdev, NULL);
+	bi = netdev_priv(netdev);
+	bi->netdev = netdev;
+
+	netdev->netdev_ops = &bpfhv_netdev_ops;
+	netdev->features = NETIF_F_HIGHDMA;
+	netif_set_real_num_tx_queues(netdev, queue_pairs);
+	netif_set_real_num_rx_queues(netdev, queue_pairs);
+
+	ret = register_netdev(netdev);
+	if (ret) {
+		goto err_reg;
+	}
+
+	netif_carrier_on(netdev);
+
+	*bip = bi;
+
+	return 0;
+err_reg:
+	free_netdev(netdev);
+
+	return ret;
+}
+
+static void
+bpfhv_netdev_teardown(struct bpfhv_info *bi)
+{
+	struct net_device *netdev = bi->netdev;
+
+	netif_carrier_off(netdev);
+	unregister_netdev(netdev);
+	free_netdev(netdev);
+}
+
+#define TEST
+#ifdef TEST
 static int
 test_bpf_program(const char *progname, struct bpf_insn *insns,
 		unsigned int insn_count)
@@ -82,17 +186,26 @@ test_bpf_programs(void)
 	test_bpf_program("simple", insns1, sizeof(insns1) / sizeof(insns1[0]));
 	test_bpf_program("fixed-loop", insns2, sizeof(insns2) / sizeof(insns2[0]));
 }
+#endif  /* TEST */
+
+static struct bpfhv_info *__bip = NULL;
 
 static int __init
 bpfhv_init(void)
 {
+#ifdef TEST
 	test_bpf_programs();
-	return 0;
+#endif  /* TEST */
+
+	return bpfhv_netdev_setup(&__bip);
 }
 
 static void __exit
 bpfhv_fini(void)
 {
+	if (__bip) {
+		bpfhv_netdev_teardown(__bip);
+	}
 }
 
 module_init(bpfhv_init);
