@@ -39,7 +39,7 @@ test_bpf_program(const char *progname, struct bpf_insn *insns,
 	prog->gpl_compatible = 1;
 	prog->type = BPF_PROG_TYPE_UNSPEC;
 	prog->aux->load_time = ktime_get_boot_ns();
-	strlcpy(prog->aux->name, "bpfhv-", sizeof(prog->aux->name));
+	strlcpy(prog->aux->name, "hv-", sizeof(prog->aux->name));
 	strlcat(prog->aux->name, progname, sizeof(prog->aux->name));
 
 	/* Replacement for bpf_check(). */
