@@ -20,6 +20,7 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/filter.h>	/* struct bpf_prog */
+#include <linux/bpf.h>		/* struct bpf_prog_aux */
 
 static int
 test_bpf_program(void)
@@ -27,15 +28,33 @@ test_bpf_program(void)
 	struct bpf_prog *prog;
 	unsigned int insn_count;
 	struct bpf_insn insns[] = {
-		BPF_MOV64_IMM(BPF_REG_2, 20),
-		BPF_MOV64_IMM(BPF_REG_3, 30),
+		BPF_MOV64_IMM(BPF_REG_2, 20),	/* R2 = 20 */
+		BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, 10),	/* R2 += 10 */
+		BPF_MOV64_REG(BPF_REG_3, BPF_REG_2),	/* R3 = R2 */
+		BPF_MOV64_REG(BPF_REG_0, BPF_REG_3),	/* R0 = R3 */
+		BPF_EXIT_INSN(),
 	};
+	int err;
 
 	insn_count = sizeof(insns) / sizeof(insns[0]);
 
 	prog = bpf_prog_alloc(bpf_prog_size(insn_count), GFP_USER);
 	if (!prog) {
 		return -ENOMEM;
+	}
+	prog->len = insn_count;
+	atomic_set(&prog->aux->refcnt, 1);
+	prog->gpl_compatible = 1;
+	prog->type = BPF_PROG_TYPE_UNSPEC;
+	prog->aux->load_time = ktime_get_boot_ns();
+	strlcpy(prog->aux->name, "bpfhv", sizeof(prog->aux->name));
+
+	/* Replacement for bpf_check(). */
+	prog->aux->stack_depth = MAX_BPF_STACK;
+
+	prog = bpf_prog_select_runtime(prog, &err);
+	if (err < 0) {
+		printk("bpf_prog_select_runtime() failed: %d\n", err);
 	}
 
 	bpf_prog_free(prog);
