@@ -40,14 +40,15 @@ struct bpfhv_tx_context {
 	 * On completion, 'packet_cookie' is an output argument, while
 	 * all the other fields are invalid.
 	 */
-	uint64_t packet_cookie;
+	uint64_t	packet_cookie;
 #define BPFHV_MAX_TX_SLOTS		64
-	uint64_t phys[BPFHV_MAX_TX_SLOTS];
-	uint32_t len[BPFHV_MAX_TX_SLOTS];
-	uint32_t num_slots;
-	uint32_t pad[15];
+	uint64_t	phys[BPFHV_MAX_TX_SLOTS];
+	uint32_t	len[BPFHV_MAX_TX_SLOTS];
+	uint32_t	num_slots;
+	uint32_t	pad[15];
 
 	/* Private hv-side context follows here. */
+	char		opaque[0];
 };
 
 /* Context for the receive-side eBPF programs. */
@@ -65,13 +66,14 @@ struct bpfhv_rx_context {
 	 * eBPF program through a helper call.
 	 * All the other fields are invalid.
 	 */
-	uint64_t packet_cookie;
+	uint64_t	packet_cookie;
 #define BPFHV_MAX_RX_SLOTS		64
-	uint64_t phys[BPFHV_MAX_TX_SLOTS];
-	uint32_t len[BPFHV_MAX_TX_SLOTS];
-	uint32_t num_slots;
-	uint32_t pad[15];
+	uint64_t	phys[BPFHV_MAX_TX_SLOTS];
+	uint32_t	len[BPFHV_MAX_TX_SLOTS];
+	uint32_t	num_slots;
+	uint32_t	pad[15];
 
 	/* Private hv-side context follows here. */
+	char		opaque[0];
 };
 

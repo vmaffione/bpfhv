@@ -27,21 +27,26 @@
 #include "bpfhv_context.h"
 
 struct bpfhv_info {
-	struct net_device *netdev;
-	struct napi_struct napi;
+	struct net_device		*netdev;
+	struct napi_struct		napi;
 
-	struct bpf_prog *tx_publish_prog;
-	struct bpf_prog *tx_complete_prog;
-	struct bpf_prog *rx_publish_prog;
-	struct bpf_prog *rx_complete_prog;
+	struct bpf_prog			*tx_publish_prog;
+	struct bpf_prog			*tx_complete_prog;
+	struct bpfhv_tx_context		*tx_ctx;
+	size_t				tx_ctx_size;
+
+	struct bpf_prog			*rx_publish_prog;
+	struct bpf_prog			*rx_complete_prog;
+	struct bpfhv_rx_context		*rx_ctx;
+	size_t				rx_ctx_size;
 };
 
 static int		bpfhv_netdev_setup(struct bpfhv_info **bip);
 static void		bpfhv_netdev_teardown(struct bpfhv_info *bi);
 static int		bpfhv_programs_setup(struct bpfhv_info *bi);
 static struct bpf_prog	*bpfhv_prog_alloc(const char *progname,
-						struct bpf_insn *insns,
-						unsigned int insn_count);
+					struct bpf_insn *insns,
+					size_t insn_count);
 static int		bpfhv_programs_teardown(struct bpfhv_info *bi);
 
 static int		bpfhv_open(struct net_device *netdev);
@@ -84,12 +89,12 @@ bpfhv_netdev_setup(struct bpfhv_info **bip)
 	netif_set_real_num_tx_queues(netdev, queue_pairs);
 	netif_set_real_num_rx_queues(netdev, queue_pairs);
 
-	netif_napi_add(netdev, &bi->napi, bpfhv_rx_poll, NAPI_POLL_WEIGHT);
-
 	ret = bpfhv_programs_setup(bi);
 	if (ret) {
 		goto err_prog;
 	}
+
+	netif_napi_add(netdev, &bi->napi, bpfhv_rx_poll, NAPI_POLL_WEIGHT);
 
 	ret = register_netdev(netdev);
 	if (ret) {
@@ -127,9 +132,15 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 	struct bpf_insn stub[] = {
 		BPF_MOV64_IMM(BPF_REG_0, 42),
 	};
-	const unsigned int insn_count = sizeof(stub)/sizeof(stub[0]);
+	const size_t insn_count = sizeof(stub)/sizeof(stub[0]);
+	const size_t ctx_size = sizeof(struct bpfhv_tx_context) + 1024;
 
 	bpfhv_programs_teardown(bi);
+
+	bi->tx_ctx = kzalloc(ctx_size, GFP_KERNEL);
+	if (bi->tx_ctx == NULL) {
+		goto err;
+	}
 
 	bi->tx_publish_prog = bpfhv_prog_alloc("txp", stub, insn_count);
 	if (bi->tx_publish_prog == NULL) {
@@ -141,6 +152,10 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		goto err;
 	}
 
+	bi->rx_ctx = kzalloc(ctx_size, GFP_KERNEL);
+	if (bi->rx_ctx == NULL) {
+		goto err;
+	}
 	bi->rx_publish_prog = bpfhv_prog_alloc("rxp", stub, insn_count);
 	if (bi->rx_publish_prog == NULL) {
 		goto err;
@@ -160,7 +175,7 @@ err:
 /* Taken from kernel/bpf/syscall.c:bpf_prog_load(). */
 static struct bpf_prog *
 bpfhv_prog_alloc(const char *progname, struct bpf_insn *insns,
-		unsigned int insn_count)
+		size_t insn_count)
 {
 	struct bpf_prog *prog;
 	int ret;
@@ -204,6 +219,11 @@ bpfhv_programs_teardown(struct bpfhv_info *bi)
 		bi->tx_complete_prog = NULL;
 	}
 
+	if (bi->tx_ctx) {
+		kfree(bi->tx_ctx);
+		bi->tx_ctx = NULL;
+	}
+
 	if (bi->rx_publish_prog) {
 		bpf_prog_free(bi->rx_publish_prog);
 		bi->rx_publish_prog = NULL;
@@ -212,6 +232,11 @@ bpfhv_programs_teardown(struct bpfhv_info *bi)
 	if (bi->rx_complete_prog) {
 		bpf_prog_free(bi->rx_complete_prog);
 		bi->rx_complete_prog = NULL;
+	}
+
+	if (bi->rx_ctx) {
+		kfree(bi->rx_ctx);
+		bi->rx_ctx = NULL;
 	}
 
 	return 0;
@@ -269,7 +294,7 @@ bpfhv_change_mtu(struct net_device *netdev, int new_mtu)
 #ifdef TEST
 static int
 test_bpf_program(const char *progname, struct bpf_insn *insns,
-		unsigned int insn_count)
+		size_t insn_count)
 {
 	struct bpf_prog *prog;
 	int ret;
