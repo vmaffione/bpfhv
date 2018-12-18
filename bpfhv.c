@@ -261,7 +261,52 @@ bpfhv_close(struct net_device *netdev)
 static netdev_tx_t
 bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
+	struct bpfhv_info *bi = netdev_priv(netdev);
+	struct bpfhv_tx_context *tx_ctx = bi->tx_ctx;
+	unsigned int len = skb_headlen(skb);
+	unsigned int nr_frags;
+	unsigned int i;
+	unsigned int f;
+
+	nr_frags = skb_shinfo(skb)->nr_frags;
+	if (unlikely(nr_frags + 1 > BPFHV_MAX_TX_SLOTS)) {
+		dev_kfree_skb_any(skb);
+		return NETDEV_TX_OK;
+	}
+
+	/* Prepare the input argument for the txp program. */
+	tx_ctx->packet_cookie = (uintptr_t)skb;
+	if (unlikely(len == 0)) {
+		i = 0;
+	} else {
+		/* TODO dma_map_single(dev, skb->data, len, DMA_TO_DEVICE); */
+		tx_ctx->phys[0] = (uintptr_t)NULL;
+		tx_ctx->len[0] = len;
+		i = 1;
+	}
+
+	for (f = 0; f < nr_frags; f++, i++) {
+		struct skb_frag_struct *frag;
+
+		frag = &skb_shinfo(skb)->frags[f];
+		len = frag->size;
+
+		if (unlikely(len == 0)) {
+			continue;
+		}
+
+		/* TODO dma_map_page(dev, frag->page, frag->page_offset,
+					len, DMA_TO_DEVICE); */
+		tx_ctx->phys[i] = (uintptr_t)NULL;
+		tx_ctx->len[i] = len;
+	}
+	tx_ctx->num_slots = i;
+
+	/* Of course we should not free the skb, but for now we know that
+	 * the txp program is a stub. */
+	printk("txp(%u bytes)\n", skb->len);
 	dev_kfree_skb_any(skb);
+
 	return NETDEV_TX_OK;
 }
 
