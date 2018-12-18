@@ -35,7 +35,7 @@ struct bpfhv_tx_context {
 	 * in 'num_slots'. OS packet reference (e.g., pointer to sk_buff
 	 * or mbuf) is stored in 'packet_cookie'.
 	 *
-	 * On submission, 'phys', 'len', 'packet_cookie' and 'num_slots'
+	 * On publication, 'phys', 'len', 'packet_cookie' and 'num_slots'
 	 * are input argument for the eBPF program.
 	 * On completion, 'packet_cookie' is an output argument, while
 	 * all the other fields are invalid.

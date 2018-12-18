@@ -29,7 +29,17 @@
 struct bpfhv_info {
 	struct net_device *netdev;
 	struct napi_struct napi;
+
+	struct bpf_prog *tx_publish_prog;
+	struct bpf_prog *tx_complete_prog;
+	struct bpf_prog *rx_publish_prog;
+	struct bpf_prog *rx_complete_prog;
 };
+
+static int bpfhv_programs_setup(struct bpfhv_info *bi);
+static struct bpf_prog *bpfhv_prog_alloc(const char *progname,
+		struct bpf_insn *insns, unsigned int insn_count);
+static int bpfhv_programs_teardown(struct bpfhv_info *bi);
 
 static int
 bpfhv_open(struct net_device *netdev)
@@ -113,6 +123,11 @@ bpfhv_netdev_setup(struct bpfhv_info **bip)
 
 	netif_napi_add(netdev, &bi->napi, bpfhv_rx_poll, NAPI_POLL_WEIGHT);
 
+	ret = bpfhv_programs_setup(bi);
+	if (ret) {
+		goto err_prog;
+	}
+
 	ret = register_netdev(netdev);
 	if (ret) {
 		goto err_reg;
@@ -124,6 +139,8 @@ bpfhv_netdev_setup(struct bpfhv_info **bip)
 
 	return 0;
 err_reg:
+	bpfhv_programs_teardown(bi);
+err_prog:
 	free_netdev(netdev);
 
 	return ret;
@@ -137,13 +154,49 @@ bpfhv_netdev_teardown(struct bpfhv_info *bi)
 	netif_carrier_off(netdev);
 	netif_napi_del(&bi->napi);
 	unregister_netdev(netdev);
+	bpfhv_programs_teardown(bi);
 	free_netdev(netdev);
 }
 
-#define TEST
-#ifdef TEST
 static int
-test_bpf_program(const char *progname, struct bpf_insn *insns,
+bpfhv_programs_setup(struct bpfhv_info *bi)
+{
+	struct bpf_insn stub[] = {
+		BPF_MOV64_IMM(BPF_REG_0, 42),
+	};
+	const unsigned int insn_count = sizeof(stub)/sizeof(stub[0]);
+
+	bpfhv_programs_teardown(bi);
+
+	bi->tx_publish_prog = bpfhv_prog_alloc("txp", stub, insn_count);
+	if (bi->tx_publish_prog == NULL) {
+		goto err;
+	}
+
+	bi->tx_complete_prog = bpfhv_prog_alloc("txc", stub, insn_count);
+	if (bi->tx_complete_prog == NULL) {
+		goto err;
+	}
+
+	bi->rx_publish_prog = bpfhv_prog_alloc("rxp", stub, insn_count);
+	if (bi->rx_publish_prog == NULL) {
+		goto err;
+	}
+
+	bi->rx_complete_prog = bpfhv_prog_alloc("rxc", stub, insn_count);
+	if (bi->rx_complete_prog == NULL) {
+		goto err;
+	}
+
+	return 0;
+err:
+	bpfhv_programs_teardown(bi);
+	return -1;
+}
+
+/* Taken from kernel/bpf/syscall.c:bpf_prog_load(). */
+static struct bpf_prog *
+bpfhv_prog_alloc(const char *progname, struct bpf_insn *insns,
 		unsigned int insn_count)
 {
 	struct bpf_prog *prog;
@@ -151,7 +204,7 @@ test_bpf_program(const char *progname, struct bpf_insn *insns,
 
 	prog = bpf_prog_alloc(bpf_prog_size(insn_count), GFP_USER);
 	if (!prog) {
-		return -ENOMEM;
+		return NULL;
 	}
 	prog->len = insn_count;
 	memcpy(prog->insnsi, insns, bpf_prog_insn_size(prog));
@@ -168,6 +221,51 @@ test_bpf_program(const char *progname, struct bpf_insn *insns,
 	prog = bpf_prog_select_runtime(prog, &ret);
 	if (ret < 0) {
 		printk("bpf_prog_select_runtime() failed: %d\n", ret);
+		bpf_prog_free(prog);
+		return NULL;
+	}
+
+	return prog;
+}
+
+static int
+bpfhv_programs_teardown(struct bpfhv_info *bi)
+{
+	if (bi->tx_publish_prog) {
+		bpf_prog_free(bi->tx_publish_prog);
+		bi->tx_publish_prog = NULL;
+	}
+
+	if (bi->tx_complete_prog) {
+		bpf_prog_free(bi->tx_complete_prog);
+		bi->tx_complete_prog = NULL;
+	}
+
+	if (bi->rx_publish_prog) {
+		bpf_prog_free(bi->rx_publish_prog);
+		bi->rx_publish_prog = NULL;
+	}
+
+	if (bi->rx_complete_prog) {
+		bpf_prog_free(bi->rx_complete_prog);
+		bi->rx_complete_prog = NULL;
+	}
+
+	return 0;
+}
+
+#define TEST
+#ifdef TEST
+static int
+test_bpf_program(const char *progname, struct bpf_insn *insns,
+		unsigned int insn_count)
+{
+	struct bpf_prog *prog;
+	int ret;
+
+	prog = bpfhv_prog_alloc(progname, insns, insn_count);
+	if (!prog) {
+		return -EPERM;
 	}
 
 	ret = BPF_PROG_RUN(prog, /*ctx=*/NULL);
