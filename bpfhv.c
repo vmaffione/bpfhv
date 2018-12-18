@@ -1,4 +1,5 @@
 /*
+ *    Linux driver for the eBPF paravirtual device.
  *    2018 Vincenzo Maffione <v.maffione@gmail.it>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,6 +23,54 @@
 #include <linux/filter.h>	/* struct bpf_prog */
 #include <linux/bpf.h>		/* struct bpf_prog_aux */
 #include <linux/netdevice.h>
+
+/* Context for the transmit-side eBPF programs. */
+struct bpfhv_tx_context {
+	/*
+	 * Array of physical addresses and lengths, representing a
+	 * scatter-gather buffer. The number of valid slots is stored
+	 * in 'num_slots'. OS packet reference (e.g., pointer to sk_buff
+	 * or mbuf) is stored in 'packet_cookie'.
+	 *
+	 * On submission, 'phys', 'len', 'packet_cookie' and 'num_slots'
+	 * are input argument for the eBPF program.
+	 * On completion, 'packet_cookie' is an output argument, while
+	 * all the other fields are invalid.
+	 */
+	uint64_t packet_cookie;
+#define BPFHV_MAX_TX_SLOTS		64
+	uint64_t phys[BPFHV_MAX_TX_SLOTS];
+	uint32_t len[BPFHV_MAX_TX_SLOTS];
+	uint32_t num_slots;
+	uint32_t pad[15];
+
+	/* Private hv-side context follows here. */
+};
+
+/* Context for the receive-side eBPF programs. */
+struct bpfhv_rx_context {
+	/*
+	 * Array of physical addresses and lengths, representing a
+	 * scatter-gather buffer. The number of valid slots is stored
+	 * in 'num_slots'. OS packet reference (e.g., pointer to sk_buff
+	 * or mbuf) is stored in 'packet_cookie'.
+	 *
+	 * On publication, 'phys', 'len' and 'num_slots' are input argument
+	 * for the eBPF program. The 'packet_cookie' field is invalid.
+	 * On receiving, 'packet_cookie' is an output argument, and it contains
+	 * a pointer to an OS packet. The OS packet allocated by the receive
+	 * eBPF program through a helper call.
+	 * All the other fields are invalid.
+	 */
+	uint64_t packet_cookie;
+#define BPFHV_MAX_RX_SLOTS		64
+	uint64_t phys[BPFHV_MAX_TX_SLOTS];
+	uint32_t len[BPFHV_MAX_TX_SLOTS];
+	uint32_t num_slots;
+	uint32_t pad[15];
+
+	/* Private hv-side context follows here. */
+};
 
 struct bpfhv_info {
 	struct net_device *netdev;
