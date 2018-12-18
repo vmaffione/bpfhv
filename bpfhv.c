@@ -36,58 +36,21 @@ struct bpfhv_info {
 	struct bpf_prog *rx_complete_prog;
 };
 
-static int bpfhv_programs_setup(struct bpfhv_info *bi);
-static struct bpf_prog *bpfhv_prog_alloc(const char *progname,
-		struct bpf_insn *insns, unsigned int insn_count);
-static int bpfhv_programs_teardown(struct bpfhv_info *bi);
+static int		bpfhv_netdev_setup(struct bpfhv_info **bip);
+static void		bpfhv_netdev_teardown(struct bpfhv_info *bi);
+static int		bpfhv_programs_setup(struct bpfhv_info *bi);
+static struct bpf_prog	*bpfhv_prog_alloc(const char *progname,
+						struct bpf_insn *insns,
+						unsigned int insn_count);
+static int		bpfhv_programs_teardown(struct bpfhv_info *bi);
 
-static int
-bpfhv_open(struct net_device *netdev)
-{
-	struct bpfhv_info *bi = netdev_priv(netdev);
-
-	(void)bi;
-
-	return 0;
-}
-
-static int
-bpfhv_close(struct net_device *netdev)
-{
-	return 0;
-}
-
-static netdev_tx_t
-bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
-{
-	dev_kfree_skb_any(skb);
-	return NETDEV_TX_OK;
-}
-
-static int
-bpfhv_rx_poll(struct napi_struct *napi, int budget)
-{
-	struct bpfhv_info *bi = container_of(napi, struct bpfhv_info, napi);
-	(void)bi;
-
-	return 0;
-}
-
-static struct net_device_stats *
-bpfhv_get_stats(struct net_device *netdev)
-{
-	return &netdev->stats;
-}
-
-static int
-bpfhv_change_mtu(struct net_device *netdev, int new_mtu)
-{
-	pr_info("%s: %s changing MTU from %d to %d\n",
-		__func__, netdev->name, netdev->mtu, new_mtu);
-	netdev->mtu = new_mtu;
-
-	return 0;
-}
+static int		bpfhv_open(struct net_device *netdev);
+static int		bpfhv_close(struct net_device *netdev);
+static netdev_tx_t	bpfhv_start_xmit(struct sk_buff *skb,
+					struct net_device *netdev);
+static int		bpfhv_rx_poll(struct napi_struct *napi, int budget);
+static struct net_device_stats *bpfhv_get_stats(struct net_device *netdev);
+static int		bpfhv_change_mtu(struct net_device *netdev, int new_mtu);
 
 static const struct net_device_ops bpfhv_netdev_ops = {
 	.ndo_open			= bpfhv_open,
@@ -250,6 +213,54 @@ bpfhv_programs_teardown(struct bpfhv_info *bi)
 		bpf_prog_free(bi->rx_complete_prog);
 		bi->rx_complete_prog = NULL;
 	}
+
+	return 0;
+}
+
+static int
+bpfhv_open(struct net_device *netdev)
+{
+	struct bpfhv_info *bi = netdev_priv(netdev);
+
+	(void)bi;
+
+	return 0;
+}
+
+static int
+bpfhv_close(struct net_device *netdev)
+{
+	return 0;
+}
+
+static netdev_tx_t
+bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
+{
+	dev_kfree_skb_any(skb);
+	return NETDEV_TX_OK;
+}
+
+static int
+bpfhv_rx_poll(struct napi_struct *napi, int budget)
+{
+	struct bpfhv_info *bi = container_of(napi, struct bpfhv_info, napi);
+	(void)bi;
+
+	return 0;
+}
+
+static struct net_device_stats *
+bpfhv_get_stats(struct net_device *netdev)
+{
+	return &netdev->stats;
+}
+
+static int
+bpfhv_change_mtu(struct net_device *netdev, int new_mtu)
+{
+	pr_info("%s: %s changing MTU from %d to %d\n",
+		__func__, netdev->name, netdev->mtu, new_mtu);
+	netdev->mtu = new_mtu;
 
 	return 0;
 }
