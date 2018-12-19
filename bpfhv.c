@@ -89,11 +89,14 @@ bpfhv_netdev_setup(struct bpfhv_info **bip)
 	netif_set_real_num_tx_queues(netdev, queue_pairs);
 	netif_set_real_num_rx_queues(netdev, queue_pairs);
 
+	/* Prepare transmit/receive eBPF programs and the associated
+	 * contexts. */
 	ret = bpfhv_programs_setup(bi);
 	if (ret) {
 		goto err_prog;
 	}
 
+	/* Register the network interface within the network stack. */
 	netif_napi_add(netdev, &bi->napi, bpfhv_rx_poll, NAPI_POLL_WEIGHT);
 
 	ret = register_netdev(netdev);
@@ -131,6 +134,7 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 {
 	struct bpf_insn stub[] = {
 		BPF_MOV64_IMM(BPF_REG_0, 42),
+		BPF_EXIT_INSN(),
 	};
 	const size_t insn_count = sizeof(stub)/sizeof(stub[0]);
 	const size_t ctx_size = sizeof(struct bpfhv_tx_context) + 1024;
@@ -267,6 +271,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	unsigned int nr_frags;
 	unsigned int i;
 	unsigned int f;
+	int ret;
 
 	nr_frags = skb_shinfo(skb)->nr_frags;
 	if (unlikely(nr_frags + 1 > BPFHV_MAX_TX_SLOTS)) {
@@ -274,7 +279,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		return NETDEV_TX_OK;
 	}
 
-	/* Prepare the input argument for the txp program. */
+	/* Prepare the input arguments for the txp program. */
 	tx_ctx->packet_cookie = (uintptr_t)skb;
 	if (unlikely(len == 0)) {
 		i = 0;
@@ -305,6 +310,8 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	/* Of course we should not free the skb, but for now we know that
 	 * the txp program is a stub. */
 	printk("txp(%u bytes)\n", skb->len);
+	ret = BPF_PROG_RUN(bi->tx_publish_prog, /*ctx=*/tx_ctx);
+	printk("txp returned %d\n", ret);
 	dev_kfree_skb_any(skb);
 
 	return NETDEV_TX_OK;
