@@ -32,8 +32,8 @@ struct bpfhv_tx_context {
 	/*
 	 * Array of physical addresses and lengths, representing a
 	 * scatter-gather buffer. The number of valid slots is stored
-	 * in 'num_slots'. OS packet reference (e.g., pointer to sk_buff
-	 * or mbuf) is stored in 'packet_cookie'.
+	 * in 'num_slots'. Guest OS packet reference (e.g., pointer to sk_buff
+	 * or mbuf) can be stored in 'packet_cookie'.
 	 *
 	 * On publication, 'phys', 'len', 'packet_cookie' and 'num_slots'
 	 * are input argument for the eBPF program.
@@ -54,22 +54,23 @@ struct bpfhv_tx_context {
 /* Context for the receive-side eBPF programs. */
 struct bpfhv_rx_context {
 	/*
-	 * Array of physical addresses and lengths, representing a
-	 * scatter-gather buffer. The number of valid slots is stored
-	 * in 'num_slots'. OS packet reference (e.g., pointer to sk_buff
-	 * or mbuf) is stored in 'packet_cookie'.
+	 * Array of physical addresses and lengths, representing a set of
+	 * buffers. The number of valid slots is stored in 'num_slots'.
+	 * The buffer cookies can be used by the guest OS to identify the
+	 * buffers when building the OS packet (e.g. sk_buff or mbuf).
+	 * A reference to the OS packet can be stored in 'packet_cookie'.
 	 *
-	 * On publication, 'phys', 'len', 'buf_cookies' and 'num_slots'
-	 * are input arguments for the eBPF program.
-	 * The 'packet_cookie' field is invalid.
+	 * On publication, 'phys', 'len', 'buf_cookie' and 'num_slots'
+	 * are input arguments for the eBPF program, and the 'packet_cookie'
+	 * field is invalid.
 	 * On receiving, 'packet_cookie' is an output argument, and it contains
-	 * a pointer to an OS packet. The OS packet allocated by the receive
-	 * eBPF program through a helper call.
+	 * a pointer to a guest OS packet. The OS packet allocated by the
+	 * receive eBPF program by means of a helper call.
 	 * All the other fields are invalid.
 	 */
 	uint64_t	packet_cookie;
 #define BPFHV_MAX_RX_SLOTS		64
-	uint64_t	buf_cookies[BPFHV_MAX_RX_SLOTS];
+	uint64_t	buf_cookie[BPFHV_MAX_RX_SLOTS];
 	uint64_t	phys[BPFHV_MAX_RX_SLOTS];
 	uint32_t	len[BPFHV_MAX_RX_SLOTS];
 	uint32_t	num_slots;

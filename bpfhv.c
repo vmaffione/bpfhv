@@ -30,17 +30,29 @@ struct bpfhv_info {
 	struct net_device		*netdev;
 	struct napi_struct		napi;
 
-	/* Transmit context and programs. */
+	/* Transmit programs: publish and completion. */
 	struct bpf_prog			*tx_publish_prog;
 	struct bpf_prog			*tx_complete_prog;
+	/* Context for the transmit programs. */
 	struct bpfhv_tx_context		*tx_ctx;
 	size_t				tx_ctx_size;
+	/* Maximum number of slots available for transmission. */
+	size_t				tx_slots;
+	/* Number of slots currently available for the guest to transmit
+	 * more packets. */
+	size_t				tx_free_slots;
 
-	/* Receive context and programs. */
+	/* Receive programs: publish and completion. */
 	struct bpf_prog			*rx_publish_prog;
 	struct bpf_prog			*rx_complete_prog;
+	/* Context for the receive programs. */
 	struct bpfhv_rx_context		*rx_ctx;
 	size_t				rx_ctx_size;
+	/* Maximum number of slots available for receive operation. */
+	size_t				rx_slots;
+	/* Number of slots currently available for the hypervisor to
+	 * receive more packets. */
+	size_t				rx_avail_slots;
 
 	/* Temporary timer for interrupt emulation. */
 	struct timer_list		intr_tmr;
@@ -60,6 +72,7 @@ static netdev_tx_t	bpfhv_start_xmit(struct sk_buff *skb,
 					struct net_device *netdev);
 static void		bpfhv_tx_clean(struct bpfhv_info *bi);
 static void		bpfhv_intr_tmr(struct timer_list *tmr);
+static int		bpfhv_rx_refill(struct bpfhv_info *bi);
 static int		bpfhv_rx_poll(struct napi_struct *napi, int budget);
 static struct net_device_stats *bpfhv_get_stats(struct net_device *netdev);
 static int		bpfhv_change_mtu(struct net_device *netdev, int new_mtu);
@@ -142,6 +155,7 @@ static int
 bpfhv_programs_setup(struct bpfhv_info *bi)
 {
 	const size_t ctx_size = sizeof(struct bpfhv_tx_context) + 1024;
+	const size_t num_slots = 256;
 	struct bpf_insn txp_insns[] = {
 		/* R2 = *(u64 *)(R1 + sizeof(ctx)) */
 		BPF_LDX_MEM(BPF_DW, BPF_REG_2, BPF_REG_1,
@@ -176,10 +190,13 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 
 	bpfhv_programs_teardown(bi);
 
-	bi->tx_ctx = kzalloc(ctx_size, GFP_KERNEL);
+	bi->tx_ctx_size = ctx_size;
+	bi->tx_ctx = kzalloc(bi->tx_ctx_size, GFP_KERNEL);
 	if (bi->tx_ctx == NULL) {
 		goto err;
 	}
+	bi->tx_slots = num_slots;
+	bi->tx_free_slots = num_slots; /* Initially all the slots are free. */
 
 	bi->tx_publish_prog = bpfhv_prog_alloc("txp", txp_insns,
 						ARRAY_SIZE(txp_insns));
@@ -193,10 +210,14 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		goto err;
 	}
 
-	bi->rx_ctx = kzalloc(ctx_size, GFP_KERNEL);
+	bi->rx_ctx_size = ctx_size;
+	bi->rx_ctx = kzalloc(bi->rx_ctx_size, GFP_KERNEL);
 	if (bi->rx_ctx == NULL) {
 		goto err;
 	}
+	bi->rx_slots = num_slots;
+	bi->rx_avail_slots = 0;
+
 	bi->rx_publish_prog = bpfhv_prog_alloc("rxp", stub, ARRAY_SIZE(stub));
 	if (bi->rx_publish_prog == NULL) {
 		goto err;
@@ -288,6 +309,7 @@ bpfhv_open(struct net_device *netdev)
 {
 	struct bpfhv_info *bi = netdev_priv(netdev);
 
+	bpfhv_rx_refill(bi);
 	napi_enable(&bi->napi);
 	mod_timer(&bi->intr_tmr, jiffies + msecs_to_jiffies(300));
 
@@ -322,6 +344,10 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		return NETDEV_TX_OK;
 	}
 
+	if (bi->tx_free_slots < nr_frags + 1) {
+		return NETDEV_TX_BUSY;
+	}
+
 	/* Prepare the input arguments for the txp program. */
 	tx_ctx->packet_cookie = (uintptr_t)skb;
 	if (unlikely(len == 0)) {
@@ -349,6 +375,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		tx_ctx->len[i] = len;
 	}
 	tx_ctx->num_slots = i;
+	bi->tx_free_slots -= i;
 
 	/* Of course we should not free the skb, but for now we know that
 	 * the txp program is a stub. */
@@ -377,7 +404,39 @@ bpfhv_tx_clean(struct bpfhv_info *bi)
 	ret = BPF_PROG_RUN(bi->tx_complete_prog, /*ctx=*/bi->tx_ctx);
 	if (ret != 0) {
 		printk("txc() --> %d packets\n", ret);
+		if (likely(ret > 0)) {
+			bi->tx_free_slots += ret;
+		}
 	}
+}
+
+static int
+bpfhv_rx_refill(struct bpfhv_info *bi)
+{
+	struct bpfhv_rx_context *rx_ctx = bi->rx_ctx;
+	unsigned int i;
+	int ret;
+
+	while (bi->rx_avail_slots < bi->rx_slots) {
+		size_t n = bi->rx_slots - bi->rx_avail_slots;
+
+		if (n > BPFHV_MAX_RX_SLOTS) {
+			n = BPFHV_MAX_RX_SLOTS;
+		}
+		/* Prepare the context for publishing receive buffers. */
+		for (i = 0; i < n; i++) {
+			rx_ctx->buf_cookie[i] = (uintptr_t)NULL;
+			rx_ctx->phys[i] = (uintptr_t)NULL;
+			rx_ctx->len[i] = 70;
+		}
+		rx_ctx->num_slots = i;
+		bi->rx_avail_slots += i;
+
+		ret = BPF_PROG_RUN(bi->rx_publish_prog, /*ctx=*/bi->rx_ctx);
+		printk("rxp(%u bufs) --> %d\n", i, ret);
+	}
+
+	return 0;
 }
 
 static int
