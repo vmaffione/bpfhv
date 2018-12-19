@@ -132,7 +132,6 @@ bpfhv_netdev_teardown(struct bpfhv_info *bi)
 	struct net_device *netdev = bi->netdev;
 
 	netif_carrier_off(netdev);
-	del_timer_sync(&bi->intr_tmr);
 	netif_napi_del(&bi->napi);
 	unregister_netdev(netdev);
 	bpfhv_programs_teardown(bi);
@@ -300,6 +299,7 @@ bpfhv_close(struct net_device *netdev)
 {
 	struct bpfhv_info *bi = netdev_priv(netdev);
 
+	del_timer_sync(&bi->intr_tmr);
 	napi_disable(&bi->napi);
 
 	return 0;
@@ -364,8 +364,8 @@ bpfhv_intr_tmr(struct timer_list *tmr)
 {
 	struct bpfhv_info *bi = from_timer(bi, tmr, intr_tmr);
 
+	napi_schedule(&bi->napi);
 	bpfhv_tx_clean(bi);
-
 	mod_timer(&bi->intr_tmr, jiffies + msecs_to_jiffies(300));
 }
 
@@ -375,14 +375,18 @@ bpfhv_tx_clean(struct bpfhv_info *bi)
 	int ret;
 
 	ret = BPF_PROG_RUN(bi->tx_complete_prog, /*ctx=*/bi->tx_ctx);
-	printk("txc() --> %d packets\n", ret);
+	if (ret != 0) {
+		printk("txc() --> %d packets\n", ret);
+	}
 }
 
 static int
 bpfhv_rx_poll(struct napi_struct *napi, int budget)
 {
 	struct bpfhv_info *bi = container_of(napi, struct bpfhv_info, napi);
+
 	(void)bi;
+	napi_complete(napi);
 
 	return 0;
 }
