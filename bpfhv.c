@@ -50,9 +50,9 @@ struct bpfhv_info {
 	size_t				rx_ctx_size;
 	/* Maximum number of slots available for receive operation. */
 	size_t				rx_slots;
-	/* Number of slots currently available for the hypervisor to
-	 * receive more packets. */
-	size_t				rx_avail_slots;
+	/* Number of slots currently available for the guest to publish
+	 * more buffers. */
+	size_t				rx_free_slots;
 
 	/* Temporary timer for interrupt emulation. */
 	struct timer_list		intr_tmr;
@@ -195,8 +195,7 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 	if (bi->tx_ctx == NULL) {
 		goto err;
 	}
-	bi->tx_slots = num_slots;
-	bi->tx_free_slots = num_slots; /* Initially all the slots are free. */
+	bi->tx_slots = bi->tx_free_slots = num_slots;
 
 	bi->tx_publish_prog = bpfhv_prog_alloc("txp", txp_insns,
 						ARRAY_SIZE(txp_insns));
@@ -215,8 +214,7 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 	if (bi->rx_ctx == NULL) {
 		goto err;
 	}
-	bi->rx_slots = num_slots;
-	bi->rx_avail_slots = 0;
+	bi->rx_slots = bi->rx_free_slots = num_slots;
 
 	bi->rx_publish_prog = bpfhv_prog_alloc("rxp", stub, ARRAY_SIZE(stub));
 	if (bi->rx_publish_prog == NULL) {
@@ -417,12 +415,13 @@ bpfhv_rx_refill(struct bpfhv_info *bi)
 	unsigned int i;
 	int ret;
 
-	while (bi->rx_avail_slots < bi->rx_slots) {
-		size_t n = bi->rx_slots - bi->rx_avail_slots;
+	while (bi->rx_free_slots > 0) {
+		size_t n = bi->rx_free_slots;
 
 		if (n > BPFHV_MAX_RX_SLOTS) {
 			n = BPFHV_MAX_RX_SLOTS;
 		}
+
 		/* Prepare the context for publishing receive buffers. */
 		for (i = 0; i < n; i++) {
 			rx_ctx->buf_cookie[i] = (uintptr_t)NULL;
@@ -430,7 +429,7 @@ bpfhv_rx_refill(struct bpfhv_info *bi)
 			rx_ctx->len[i] = 70;
 		}
 		rx_ctx->num_slots = i;
-		bi->rx_avail_slots += i;
+		bi->rx_free_slots -= i;
 
 		ret = BPF_PROG_RUN(bi->rx_publish_prog, /*ctx=*/bi->rx_ctx);
 		printk("rxp(%u bufs) --> %d\n", i, ret);
