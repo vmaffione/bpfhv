@@ -53,6 +53,7 @@ static int		bpfhv_open(struct net_device *netdev);
 static int		bpfhv_close(struct net_device *netdev);
 static netdev_tx_t	bpfhv_start_xmit(struct sk_buff *skb,
 					struct net_device *netdev);
+static void		bpfhv_tx_clean(struct bpfhv_info *bi);
 static int		bpfhv_rx_poll(struct napi_struct *napi, int budget);
 static struct net_device_stats *bpfhv_get_stats(struct net_device *netdev);
 static int		bpfhv_change_mtu(struct net_device *netdev, int new_mtu);
@@ -146,11 +147,24 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		BPF_MOV64_REG(BPF_REG_0, BPF_REG_2),
 		BPF_EXIT_INSN(),
 	};
+	struct bpf_insn txc_insns[] = {
+		/* R0 = *(u64 *)(R1 + sizeof(ctx)) */
+		BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_1,
+				sizeof(struct bpfhv_tx_context)),
+		/* R2 = *(u64 *)(R1 + sizeof(ctx) + 8) */
+		BPF_LDX_MEM(BPF_DW, BPF_REG_2, BPF_REG_1,
+				sizeof(struct bpfhv_tx_context) + 8),
+		/* *(u64 *)(R1 + sizeof(ctx) + 8) = R0 */
+		BPF_STX_MEM(BPF_DW, BPF_REG_1, BPF_REG_0,
+				sizeof(struct bpfhv_tx_context) + 8),
+		/* R0 -= R2 */
+		BPF_ALU64_REG(BPF_SUB, BPF_REG_0, BPF_REG_2),
+		BPF_EXIT_INSN(),
+	};
 	struct bpf_insn stub[] = {
 		BPF_MOV64_IMM(BPF_REG_0, 42),
 		BPF_EXIT_INSN(),
 	};
-	const size_t insn_count = ARRAY_SIZE(stub);
 
 	bpfhv_programs_teardown(bi);
 
@@ -165,7 +179,8 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		goto err;
 	}
 
-	bi->tx_complete_prog = bpfhv_prog_alloc("txc", stub, insn_count);
+	bi->tx_complete_prog = bpfhv_prog_alloc("txc", txc_insns,
+						ARRAY_SIZE(txc_insns));
 	if (bi->tx_complete_prog == NULL) {
 		goto err;
 	}
@@ -174,12 +189,12 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 	if (bi->rx_ctx == NULL) {
 		goto err;
 	}
-	bi->rx_publish_prog = bpfhv_prog_alloc("rxp", stub, insn_count);
+	bi->rx_publish_prog = bpfhv_prog_alloc("rxp", stub, ARRAY_SIZE(stub));
 	if (bi->rx_publish_prog == NULL) {
 		goto err;
 	}
 
-	bi->rx_complete_prog = bpfhv_prog_alloc("rxc", stub, insn_count);
+	bi->rx_complete_prog = bpfhv_prog_alloc("rxc", stub, ARRAY_SIZE(stub));
 	if (bi->rx_complete_prog == NULL) {
 		goto err;
 	}
@@ -287,6 +302,8 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	unsigned int f;
 	int ret;
 
+	bpfhv_tx_clean(bi);
+
 	nr_frags = skb_shinfo(skb)->nr_frags;
 	if (unlikely(nr_frags + 1 > BPFHV_MAX_TX_SLOTS)) {
 		dev_kfree_skb_any(skb);
@@ -328,6 +345,15 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	dev_kfree_skb_any(skb);
 
 	return NETDEV_TX_OK;
+}
+
+static void
+bpfhv_tx_clean(struct bpfhv_info *bi)
+{
+	int ret;
+
+	ret = BPF_PROG_RUN(bi->tx_complete_prog, /*ctx=*/bi->tx_ctx);
+	printk("txc() --> %d packets\n", ret);
 }
 
 static int
