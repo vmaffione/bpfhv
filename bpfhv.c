@@ -30,15 +30,20 @@ struct bpfhv_info {
 	struct net_device		*netdev;
 	struct napi_struct		napi;
 
+	/* Transmit context and programs. */
 	struct bpf_prog			*tx_publish_prog;
 	struct bpf_prog			*tx_complete_prog;
 	struct bpfhv_tx_context		*tx_ctx;
 	size_t				tx_ctx_size;
 
+	/* Receive context and programs. */
 	struct bpf_prog			*rx_publish_prog;
 	struct bpf_prog			*rx_complete_prog;
 	struct bpfhv_rx_context		*rx_ctx;
 	size_t				rx_ctx_size;
+
+	/* Temporary timer for interrupt emulation. */
+	struct timer_list		intr_tmr;
 };
 
 static int		bpfhv_netdev_setup(struct bpfhv_info **bip);
@@ -54,6 +59,7 @@ static int		bpfhv_close(struct net_device *netdev);
 static netdev_tx_t	bpfhv_start_xmit(struct sk_buff *skb,
 					struct net_device *netdev);
 static void		bpfhv_tx_clean(struct bpfhv_info *bi);
+static void		bpfhv_intr_tmr(struct timer_list *tmr);
 static int		bpfhv_rx_poll(struct napi_struct *napi, int budget);
 static struct net_device_stats *bpfhv_get_stats(struct net_device *netdev);
 static int		bpfhv_change_mtu(struct net_device *netdev, int new_mtu);
@@ -105,6 +111,8 @@ bpfhv_netdev_setup(struct bpfhv_info **bip)
 		goto err_reg;
 	}
 
+	timer_setup(&bi->intr_tmr, bpfhv_intr_tmr, 0);
+
 	netif_carrier_on(netdev);
 
 	*bip = bi;
@@ -124,6 +132,7 @@ bpfhv_netdev_teardown(struct bpfhv_info *bi)
 	struct net_device *netdev = bi->netdev;
 
 	netif_carrier_off(netdev);
+	del_timer_sync(&bi->intr_tmr);
 	netif_napi_del(&bi->napi);
 	unregister_netdev(netdev);
 	bpfhv_programs_teardown(bi);
@@ -281,6 +290,7 @@ bpfhv_open(struct net_device *netdev)
 	struct bpfhv_info *bi = netdev_priv(netdev);
 
 	napi_enable(&bi->napi);
+	mod_timer(&bi->intr_tmr, jiffies + msecs_to_jiffies(300));
 
 	return 0;
 }
@@ -305,8 +315,6 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	unsigned int i;
 	unsigned int f;
 	int ret;
-
-	bpfhv_tx_clean(bi);
 
 	nr_frags = skb_shinfo(skb)->nr_frags;
 	if (unlikely(nr_frags + 1 > BPFHV_MAX_TX_SLOTS)) {
@@ -349,6 +357,16 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	dev_kfree_skb_any(skb);
 
 	return NETDEV_TX_OK;
+}
+
+static void
+bpfhv_intr_tmr(struct timer_list *tmr)
+{
+	struct bpfhv_info *bi = from_timer(bi, tmr, intr_tmr);
+
+	bpfhv_tx_clean(bi);
+
+	mod_timer(&bi->intr_tmr, jiffies + msecs_to_jiffies(300));
 }
 
 static void
