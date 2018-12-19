@@ -280,7 +280,7 @@ bpfhv_open(struct net_device *netdev)
 {
 	struct bpfhv_info *bi = netdev_priv(netdev);
 
-	(void)bi;
+	napi_enable(&bi->napi);
 
 	return 0;
 }
@@ -288,6 +288,10 @@ bpfhv_open(struct net_device *netdev)
 static int
 bpfhv_close(struct net_device *netdev)
 {
+	struct bpfhv_info *bi = netdev_priv(netdev);
+
+	napi_disable(&bi->napi);
+
 	return 0;
 }
 
