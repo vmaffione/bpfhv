@@ -59,8 +59,9 @@ struct bpfhv_rx_context {
 	 * in 'num_slots'. OS packet reference (e.g., pointer to sk_buff
 	 * or mbuf) is stored in 'packet_cookie'.
 	 *
-	 * On publication, 'phys', 'len' and 'num_slots' are input argument
-	 * for the eBPF program. The 'packet_cookie' field is invalid.
+	 * On publication, 'phys', 'len', 'buf_cookies' and 'num_slots'
+	 * are input arguments for the eBPF program.
+	 * The 'packet_cookie' field is invalid.
 	 * On receiving, 'packet_cookie' is an output argument, and it contains
 	 * a pointer to an OS packet. The OS packet allocated by the receive
 	 * eBPF program through a helper call.
@@ -68,8 +69,9 @@ struct bpfhv_rx_context {
 	 */
 	uint64_t	packet_cookie;
 #define BPFHV_MAX_RX_SLOTS		64
-	uint64_t	phys[BPFHV_MAX_TX_SLOTS];
-	uint32_t	len[BPFHV_MAX_TX_SLOTS];
+	uint64_t	buf_cookies[BPFHV_MAX_RX_SLOTS];
+	uint64_t	phys[BPFHV_MAX_RX_SLOTS];
+	uint32_t	len[BPFHV_MAX_RX_SLOTS];
 	uint32_t	num_slots;
 	uint32_t	pad[15];
 
