@@ -132,12 +132,25 @@ bpfhv_netdev_teardown(struct bpfhv_info *bi)
 static int
 bpfhv_programs_setup(struct bpfhv_info *bi)
 {
+	const size_t ctx_size = sizeof(struct bpfhv_tx_context) + 1024;
+	struct bpf_insn txp_insns[] = {
+		/* R2 = *(u64 *)(R1 + sizeof(ctx)) */
+		BPF_LDX_MEM(BPF_DW, BPF_REG_2, BPF_REG_1,
+				sizeof(struct bpfhv_tx_context)),
+		/* R2 += 1 */
+		BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, 1),
+		/* *(u64 *)(R1 + sizeof(ctx)) = R2 */
+		BPF_STX_MEM(BPF_DW, BPF_REG_1, BPF_REG_2,
+				sizeof(struct bpfhv_tx_context)),
+		/* R0 = R2 */
+		BPF_MOV64_REG(BPF_REG_0, BPF_REG_2),
+		BPF_EXIT_INSN(),
+	};
 	struct bpf_insn stub[] = {
 		BPF_MOV64_IMM(BPF_REG_0, 42),
 		BPF_EXIT_INSN(),
 	};
-	const size_t insn_count = sizeof(stub)/sizeof(stub[0]);
-	const size_t ctx_size = sizeof(struct bpfhv_tx_context) + 1024;
+	const size_t insn_count = ARRAY_SIZE(stub);
 
 	bpfhv_programs_teardown(bi);
 
@@ -146,7 +159,8 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		goto err;
 	}
 
-	bi->tx_publish_prog = bpfhv_prog_alloc("txp", stub, insn_count);
+	bi->tx_publish_prog = bpfhv_prog_alloc("txp", txp_insns,
+						ARRAY_SIZE(txp_insns));
 	if (bi->tx_publish_prog == NULL) {
 		goto err;
 	}
@@ -309,9 +323,8 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 
 	/* Of course we should not free the skb, but for now we know that
 	 * the txp program is a stub. */
-	printk("txp(%u bytes)\n", skb->len);
 	ret = BPF_PROG_RUN(bi->tx_publish_prog, /*ctx=*/tx_ctx);
-	printk("txp returned %d\n", ret);
+	printk("txp(%u bytes) --> %d\n", skb->len, ret);
 	dev_kfree_skb_any(skb);
 
 	return NETDEV_TX_OK;
