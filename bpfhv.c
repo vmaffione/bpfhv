@@ -167,9 +167,13 @@ static const uint8_t udp_pkt[] = {
 	0x20, 0x70, 0x6b, 0x74, 0x2d, 0x67, 0x65, 0x6e, 0x20, 0x44, 0x49, 0x52,
 };
 
+#define BI_FROM_CTX(_ctx)\
+	((struct bpfhv_info *)((uintptr_t)((_ctx)->guest_priv)))
+
 BPF_CALL_1(bpf_hv_pkt_alloc, struct bpfhv_rx_context *, ctx)
 {
-	struct sk_buff *skb = alloc_skb(sizeof(udp_pkt), GFP_ATOMIC);
+	struct bpfhv_info *bi = BI_FROM_CTX(ctx);
+	struct sk_buff *skb = napi_alloc_skb(&bi->napi, sizeof(udp_pkt));
 
 	ctx->packet = (uintptr_t)skb;
 	if (unlikely(!skb)) {
