@@ -23,6 +23,7 @@
 #include <linux/filter.h>	/* struct bpf_prog */
 #include <linux/bpf.h>		/* struct bpf_prog_aux */
 #include <linux/netdevice.h>
+#include <linux/random.h>	/* get_random_bytes() */
 
 #include "bpfhv_context.h"
 
@@ -457,8 +458,13 @@ bpfhv_intr_tmr(struct timer_list *tmr)
 
 	{
 		/* Trigger "reception" of a packet (see rxc_insns[]). */
+		uint8_t rand;
 		uint64_t *rxcntp = (uint64_t *)(&bi->rx_ctx[1]);
-		(*rxcntp)++;
+
+		get_random_bytes((void *)&rand, sizeof(rand));
+		if (rand < 30) {
+			(*rxcntp)++;
+		}
 	}
 
 	napi_schedule(&bi->napi);
