@@ -151,8 +151,24 @@ bpfhv_netdev_teardown(struct bpfhv_info *bi)
 	free_netdev(netdev);
 }
 
+static const uint8_t udp_pkt[] = {
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x45, 0x10,
+	0x00, 0x2e, 0x00, 0x00, 0x40, 0x00, 0x40, 0x11, 0x26, 0xad, 0x0a, 0x00, 0x00, 0x01, 0x0a, 0x01,
+	0x00, 0x01, 0x04, 0xd2, 0x04, 0xd2, 0x00, 0x1a, 0x15, 0x80, 0x6e, 0x65, 0x74, 0x6d, 0x61, 0x70,
+	0x20, 0x70, 0x6b, 0x74, 0x2d, 0x67, 0x65, 0x6e, 0x20, 0x44, 0x49, 0x52,
+};
+
 BPF_CALL_1(bpf_hv_pkt_alloc, struct bpfhv_rx_context *, ctx)
 {
+	struct sk_buff *skb = alloc_skb(sizeof(udp_pkt), GFP_ATOMIC);
+
+	ctx->packet_cookie = (uintptr_t)skb;
+	if (unlikely(!skb)) {
+		return -ENOMEM;
+	}
+
+	skb_put_data(skb, udp_pkt, sizeof(udp_pkt));
+
 	return 0;
 }
 
@@ -202,14 +218,28 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		BPF_EXIT_INSN(),
 	};
 	struct bpf_insn rxc_insns[] = {
-		/* call bpf_hv_pkt_alloc(ctx) --> R0 */
-		BPF_EMIT_CALL(bpf_hv_pkt_alloc),
-		/* if R0 >= 0 goto PC+1*/
-		BPF_JMP_IMM(BPF_JSGE, BPF_REG_0, 0, 1),
-		/*     return R0 */
-		BPF_EXIT_INSN(),
+		/* R6 = R1 */
+		BPF_MOV64_REG(BPF_REG_6, BPF_REG_1),
+		/* R2 = *(u64 *)(R6 + sizeof(ctx)) */
+		BPF_LDX_MEM(BPF_DW, BPF_REG_2, BPF_REG_6,
+				sizeof(struct bpfhv_tx_context)),
+		/* if R2 > 0 goto PC + 2 */
+		BPF_JMP_IMM(BPF_JGT, BPF_REG_2, 0, 2),
 		/* R0 = 0 */
 		BPF_MOV64_IMM(BPF_REG_0, 0),
+		/* return R0 */
+		BPF_EXIT_INSN(),
+		/* R2 -= 1 */
+		BPF_ALU64_IMM(BPF_SUB, BPF_REG_2, 1),
+		/* *(u64 *)(R6 + sizeof(ctx)) = R2 */
+		BPF_STX_MEM(BPF_DW, BPF_REG_6, BPF_REG_2,
+				sizeof(struct bpfhv_tx_context)),
+		/* call bpf_hv_pkt_alloc(R1 = ctx) --> R0 */
+		BPF_EMIT_CALL(bpf_hv_pkt_alloc),
+		/* if R0 < 0 goto PC + 1 */
+		BPF_JMP_IMM(BPF_JSLT, BPF_REG_0, 0, 1),
+		/* R0 = 1 */
+		BPF_MOV64_IMM(BPF_REG_0, 1),
 		/* return R0 */
 		BPF_EXIT_INSN(),
 	};
@@ -485,6 +515,7 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 	int count;
 
 	for (count = 0; count < budget; count++) {
+		struct sk_buff *skb;
 		int ret;
 
 		ret = BPF_PROG_RUN(bi->rx_complete_prog, /*ctx=*/rx_ctx);
@@ -496,6 +527,13 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 			printk("rxc() failed --> %d\n", ret);
 			break;
 		}
+
+		skb = (struct sk_buff *)rx_ctx->packet_cookie;
+		if (unlikely(!skb)) {
+			printk("rxc() bug: skb not allocated\n");
+			break;
+		}
+		netif_rx(skb);
 	}
 
 	napi_complete(napi);
