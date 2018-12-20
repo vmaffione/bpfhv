@@ -188,12 +188,18 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		BPF_STX_MEM(BPF_DW, BPF_REG_1, BPF_REG_2,
 				sizeof(struct bpfhv_tx_context) + 8),
 		/* R0 = 1 */
-		BPF_MOV64_IMM(BPF_REG_1, 1),
+		BPF_MOV64_IMM(BPF_REG_0, 1),
 		/* return R0 */
 		BPF_EXIT_INSN(),
 	};
-	struct bpf_insn stub[] = {
-		BPF_MOV64_IMM(BPF_REG_0, 42),
+	struct bpf_insn rxp_insns[] = {
+		BPF_MOV64_IMM(BPF_REG_0, 0),
+		BPF_EXIT_INSN(),
+	};
+	struct bpf_insn rxc_insns[] = {
+		/* R0 = 0 */
+		BPF_MOV64_IMM(BPF_REG_0, 0),
+		/* return R0 */
 		BPF_EXIT_INSN(),
 	};
 
@@ -225,12 +231,14 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 	}
 	bi->rx_slots = bi->rx_free_slots = num_slots;
 
-	bi->rx_publish_prog = bpfhv_prog_alloc("rxp", stub, ARRAY_SIZE(stub));
+	bi->rx_publish_prog = bpfhv_prog_alloc("rxp", rxp_insns,
+						ARRAY_SIZE(rxp_insns));
 	if (bi->rx_publish_prog == NULL) {
 		goto err;
 	}
 
-	bi->rx_complete_prog = bpfhv_prog_alloc("rxc", stub, ARRAY_SIZE(stub));
+	bi->rx_complete_prog = bpfhv_prog_alloc("rxc", rxc_insns,
+						ARRAY_SIZE(rxc_insns));
 	if (bi->rx_complete_prog == NULL) {
 		goto err;
 	}
@@ -462,9 +470,28 @@ static int
 bpfhv_rx_poll(struct napi_struct *napi, int budget)
 {
 	struct bpfhv_info *bi = container_of(napi, struct bpfhv_info, napi);
+	struct bpfhv_rx_context *rx_ctx = bi->rx_ctx;
+	int count;
 
-	(void)bi;
+	for (count = 0; count < budget; count++) {
+		int ret;
+
+		ret = BPF_PROG_RUN(bi->rx_complete_prog, /*ctx=*/rx_ctx);
+		if (ret == 0) {
+			/* No more completed transmissions. */
+			break;
+		}
+		if (unlikely(ret < 0)) {
+			printk("rxc() failed --> %d\n", ret);
+			break;
+		}
+	}
+
 	napi_complete(napi);
+
+	if (count > 0) {
+		printk("rxc() --> %d packets\n", count);
+	}
 
 	return 0;
 }
