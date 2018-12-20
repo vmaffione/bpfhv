@@ -171,7 +171,7 @@ BPF_CALL_1(bpf_hv_pkt_alloc, struct bpfhv_rx_context *, ctx)
 {
 	struct sk_buff *skb = alloc_skb(sizeof(udp_pkt), GFP_ATOMIC);
 
-	ctx->packet_cookie = (uintptr_t)skb;
+	ctx->packet = (uintptr_t)skb;
 	if (unlikely(!skb)) {
 		return -ENOMEM;
 	}
@@ -292,6 +292,9 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 	if (bi->rx_complete_prog == NULL) {
 		goto err;
 	}
+
+	bi->tx_ctx->guest_priv = (uintptr_t)bi;
+	bi->rx_ctx->guest_priv = (uintptr_t)bi;
 
 	return 0;
 err:
@@ -414,7 +417,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	}
 
 	/* Prepare the input arguments for the txp program. */
-	tx_ctx->packet_cookie = (uintptr_t)skb;
+	tx_ctx->cookie = (uintptr_t)skb;
 	if (unlikely(len == 0)) {
 		i = 0;
 	} else {
@@ -548,7 +551,7 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 			break;
 		}
 
-		skb = (struct sk_buff *)rx_ctx->packet_cookie;
+		skb = (struct sk_buff *)rx_ctx->packet;
 		if (unlikely(!skb)) {
 			printk("rxc() bug: skb not allocated\n");
 			break;
