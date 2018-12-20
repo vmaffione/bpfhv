@@ -373,12 +373,6 @@ bpfhv_open(struct net_device *netdev)
 {
 	struct bpfhv_info *bi = netdev_priv(netdev);
 
-	{
-		/* Trigger "reception" of a packet (see rxc_insns[]). */
-		uint64_t *rxcntp = (uint64_t *)(&bi->rx_ctx[1]);
-		(*rxcntp)++;
-	}
-
 	bpfhv_rx_refill(bi);
 	napi_enable(&bi->napi);
 	mod_timer(&bi->intr_tmr, jiffies + msecs_to_jiffies(300));
@@ -460,6 +454,12 @@ static void
 bpfhv_intr_tmr(struct timer_list *tmr)
 {
 	struct bpfhv_info *bi = from_timer(bi, tmr, intr_tmr);
+
+	{
+		/* Trigger "reception" of a packet (see rxc_insns[]). */
+		uint64_t *rxcntp = (uint64_t *)(&bi->rx_ctx[1]);
+		(*rxcntp)++;
+	}
 
 	napi_schedule(&bi->napi);
 	bpfhv_tx_clean(bi);
