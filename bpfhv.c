@@ -222,7 +222,7 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		BPF_MOV64_REG(BPF_REG_6, BPF_REG_1),
 		/* R2 = *(u64 *)(R6 + sizeof(ctx)) */
 		BPF_LDX_MEM(BPF_DW, BPF_REG_2, BPF_REG_6,
-				sizeof(struct bpfhv_tx_context)),
+				sizeof(struct bpfhv_rx_context)),
 		/* if R2 > 0 goto PC + 2 */
 		BPF_JMP_IMM(BPF_JGT, BPF_REG_2, 0, 2),
 		/* R0 = 0 */
@@ -233,7 +233,7 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		BPF_ALU64_IMM(BPF_SUB, BPF_REG_2, 1),
 		/* *(u64 *)(R6 + sizeof(ctx)) = R2 */
 		BPF_STX_MEM(BPF_DW, BPF_REG_6, BPF_REG_2,
-				sizeof(struct bpfhv_tx_context)),
+				sizeof(struct bpfhv_rx_context)),
 		/* call bpf_hv_pkt_alloc(R1 = ctx) --> R0 */
 		BPF_EMIT_CALL(bpf_hv_pkt_alloc),
 		/* if R0 < 0 goto PC + 1 */
@@ -364,6 +364,12 @@ static int
 bpfhv_open(struct net_device *netdev)
 {
 	struct bpfhv_info *bi = netdev_priv(netdev);
+
+	{
+		/* Trigger "reception" of a packet (see rxc_insns[]). */
+		uint64_t *rxcntp = (uint64_t *)(&bi->rx_ctx[1]);
+		(*rxcntp)++;
+	}
 
 	bpfhv_rx_refill(bi);
 	napi_enable(&bi->napi);
