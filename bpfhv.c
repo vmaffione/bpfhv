@@ -539,7 +539,9 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 			printk("rxc() bug: skb not allocated\n");
 			break;
 		}
-		netif_rx(skb);
+
+		skb->protocol = eth_type_trans(skb, bi->netdev);
+		netif_receive_skb(skb);
 	}
 
 	napi_complete(napi);
