@@ -25,7 +25,7 @@
 #include <linux/netdevice.h>
 #include <linux/random.h>	/* get_random_bytes() */
 
-#include "bpfhv_context.h"
+#include "bpfhv.h"
 
 struct bpfhv_info {
 	struct net_device		*netdev;
