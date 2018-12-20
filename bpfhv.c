@@ -176,11 +176,20 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		/* R2 = *(u64 *)(R1 + sizeof(ctx) + 8) */
 		BPF_LDX_MEM(BPF_DW, BPF_REG_2, BPF_REG_1,
 				sizeof(struct bpfhv_tx_context) + 8),
-		/* *(u64 *)(R1 + sizeof(ctx) + 8) = R0 */
-		BPF_STX_MEM(BPF_DW, BPF_REG_1, BPF_REG_0,
+		/* if R0 != R2 */
+		BPF_JMP_REG(BPF_JNE, BPF_REG_0, BPF_REG_2, 2),
+		/*     R0 = 0 */
+		BPF_MOV64_IMM(BPF_REG_0, 0),
+		/*     return R0 */
+		BPF_EXIT_INSN(),
+		/* R2 += 1 */
+		BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, 1),
+		/* *(u64 *)(R1 + sizeof(ctx) + 8) = R2 */
+		BPF_STX_MEM(BPF_DW, BPF_REG_1, BPF_REG_2,
 				sizeof(struct bpfhv_tx_context) + 8),
-		/* R0 -= R2 */
-		BPF_ALU64_REG(BPF_SUB, BPF_REG_0, BPF_REG_2),
+		/* R0 = 1 */
+		BPF_MOV64_IMM(BPF_REG_1, 1),
+		/* return R0 */
 		BPF_EXIT_INSN(),
 	};
 	struct bpf_insn stub[] = {
@@ -397,14 +406,25 @@ bpfhv_intr_tmr(struct timer_list *tmr)
 static void
 bpfhv_tx_clean(struct bpfhv_info *bi)
 {
-	int ret;
+	unsigned int count;
 
-	ret = BPF_PROG_RUN(bi->tx_complete_prog, /*ctx=*/bi->tx_ctx);
-	if (ret != 0) {
-		printk("txc() --> %d packets\n", ret);
-		if (likely(ret > 0)) {
-			bi->tx_free_slots += ret;
+	for (count = 0;; count++) {
+		int ret;
+
+		ret = BPF_PROG_RUN(bi->tx_complete_prog, /*ctx=*/bi->tx_ctx);
+		if (ret == 0) {
+			/* No more completed transmissions. */
+			break;
 		}
+		if (unlikely(ret < 0)) {
+			printk("tcx() failed --> %d\n", ret);
+			break;
+		}
+	}
+
+	if (count) {
+		printk("txc() --> %d packets\n", count);
+		bi->tx_free_slots += count;
 	}
 }
 
