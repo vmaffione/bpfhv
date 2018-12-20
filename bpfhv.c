@@ -151,6 +151,11 @@ bpfhv_netdev_teardown(struct bpfhv_info *bi)
 	free_netdev(netdev);
 }
 
+BPF_CALL_1(bpf_hv_pkt_alloc, struct bpfhv_rx_context *, ctx)
+{
+	return 0;
+}
+
 static int
 bpfhv_programs_setup(struct bpfhv_info *bi)
 {
@@ -176,7 +181,7 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		/* R2 = *(u64 *)(R1 + sizeof(ctx) + 8) */
 		BPF_LDX_MEM(BPF_DW, BPF_REG_2, BPF_REG_1,
 				sizeof(struct bpfhv_tx_context) + 8),
-		/* if R0 != R2 */
+		/* if R0 == R2 */
 		BPF_JMP_REG(BPF_JNE, BPF_REG_0, BPF_REG_2, 2),
 		/*     R0 = 0 */
 		BPF_MOV64_IMM(BPF_REG_0, 0),
@@ -197,6 +202,12 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		BPF_EXIT_INSN(),
 	};
 	struct bpf_insn rxc_insns[] = {
+		/* call bpf_hv_pkt_alloc(ctx) --> R0 */
+		BPF_EMIT_CALL(bpf_hv_pkt_alloc),
+		/* if R0 >= 0 goto PC+1*/
+		BPF_JMP_IMM(BPF_JSGE, BPF_REG_0, 0, 1),
+		/*     return R0 */
+		BPF_EXIT_INSN(),
 		/* R0 = 0 */
 		BPF_MOV64_IMM(BPF_REG_0, 0),
 		/* return R0 */
