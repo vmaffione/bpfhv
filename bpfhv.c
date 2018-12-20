@@ -105,6 +105,14 @@ bpfhv_netdev_setup(struct bpfhv_info **bip)
 	bi->netdev = netdev;
 
 	netdev->netdev_ops = &bpfhv_netdev_ops;
+
+	{
+		uint8_t macaddr[6] = {
+			0x00, 0x0a, 0x0b, 0x0c, 0x01, 0x02
+		};
+		memcpy(netdev->dev_addr, macaddr, netdev->addr_len);
+	}
+
 	netdev->features = NETIF_F_HIGHDMA;
 	netif_set_real_num_tx_queues(netdev, queue_pairs);
 	netif_set_real_num_rx_queues(netdev, queue_pairs);
