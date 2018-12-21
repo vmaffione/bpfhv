@@ -62,6 +62,9 @@ struct bpfhv_info {
 static int		bpfhv_netdev_setup(struct bpfhv_info **bip);
 static void		bpfhv_netdev_teardown(struct bpfhv_info *bi);
 static int		bpfhv_programs_setup(struct bpfhv_info *bi);
+static int		bpfhv_helper_calls_fixup(struct bpfhv_info *bi,
+						struct bpf_insn *insns,
+						size_t insns_count);
 static struct bpf_prog	*bpfhv_prog_alloc(const char *progname,
 					struct bpf_insn *insns,
 					size_t insn_count);
@@ -249,7 +252,7 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		BPF_STX_MEM(BPF_DW, BPF_REG_6, BPF_REG_2,
 				sizeof(struct bpfhv_rx_context)),
 		/* call bpf_hv_pkt_alloc(R1 = ctx) --> R0 */
-		BPF_EMIT_CALL(bpf_hv_pkt_alloc),
+		BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0, BPFHV_pkt_alloc),
 		/* if R0 < 0 goto PC + 1 */
 		BPF_JMP_IMM(BPF_JSLT, BPF_REG_0, 0, 1),
 		/* R0 = 1 */
@@ -257,9 +260,34 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		/* return R0 */
 		BPF_EXIT_INSN(),
 	};
+	int ret;
 
+	/* Deallocate previous eBPF programs and the associated context. */
 	bpfhv_programs_teardown(bi);
 
+	/* Fix the immediate field of call instructions to helper functions,
+	 * replacing the abstract identifiers with actual offsets. */
+	ret = bpfhv_helper_calls_fixup(bi, txp_insns, ARRAY_SIZE(txp_insns));
+	if (ret) {
+		return ret;
+	}
+
+	ret = bpfhv_helper_calls_fixup(bi, txc_insns, ARRAY_SIZE(txc_insns));
+	if (ret) {
+		return ret;
+	}
+
+	ret = bpfhv_helper_calls_fixup(bi, rxp_insns, ARRAY_SIZE(rxp_insns));
+	if (ret) {
+		return ret;
+	}
+
+	ret = bpfhv_helper_calls_fixup(bi, rxc_insns, ARRAY_SIZE(rxc_insns));
+	if (ret) {
+		return ret;
+	}
+
+	/* Allocate all the eBPF programs and the associated context. */
 	bi->tx_ctx_size = ctx_size;
 	bi->tx_ctx = kzalloc(bi->tx_ctx_size, GFP_KERNEL);
 	if (bi->tx_ctx == NULL) {
@@ -305,6 +333,39 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 err:
 	bpfhv_programs_teardown(bi);
 	return -1;
+}
+
+static int
+bpfhv_helper_calls_fixup(struct bpfhv_info *bi, struct bpf_insn *insns,
+			size_t insns_count)
+{
+	size_t i;
+
+	for (i = 0; i < insns_count; i++, insns++) {
+		u64 (*func)(u64 r1, u64 r2, u64 r3, u64 r4, u64 r5);
+
+		if (!(insns->code == (BPF_JMP | BPF_CALL) &&
+			insns->dst_reg == 0 && insns->src_reg == 0 &&
+				insns->off == 0)) {
+			/* This is not an instruction that calls to
+			 * an helper function. */
+			continue;
+		}
+
+		switch (insns->imm) {
+		case BPFHV_pkt_alloc:
+			func = bpf_hv_pkt_alloc;
+			break;
+		default:
+			printk("Uknown helper function id %08x\n", insns->imm);
+			return -EINVAL;
+			break;
+		}
+
+		insns->imm = func - __bpf_call_base;
+	}
+
+	return 0;
 }
 
 /* Taken from kernel/bpf/syscall.c:bpf_prog_load(). */
