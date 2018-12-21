@@ -652,7 +652,7 @@ bpfhv_change_mtu(struct net_device *netdev, int new_mtu)
 	return 0;
 }
 
-#define TEST
+#undef TEST
 #ifdef TEST
 static int
 test_bpf_program(const char *progname, struct bpf_insn *insns,
