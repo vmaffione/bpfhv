@@ -86,3 +86,8 @@ struct bpfhv_rx_context {
 	char		opaque[0];
 };
 
+/* Numbers for the helper calls used by bpfhv programs. */
+#define BPFHV_HELPER_MAGIC	0x4b8f0000
+enum bpfhv_helper_id {
+	BPFHV_pkt_alloc = BPFHV_HELPER_MAGIC,
+};

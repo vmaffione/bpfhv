@@ -52,7 +52,7 @@ struct bpfhv_info {
 	/* Maximum number of slots available for receive operation. */
 	size_t				rx_slots;
 	/* Number of slots currently available for the guest to publish
-	 * more buffers. */
+	 * more receive buffers. */
 	size_t				rx_free_slots;
 
 	/* Temporary timer for interrupt emulation. */
@@ -180,6 +180,7 @@ BPF_CALL_1(bpf_hv_pkt_alloc, struct bpfhv_rx_context *, ctx)
 		return -ENOMEM;
 	}
 
+	/* TODO Build the packet from ctx->buf_cookie[] and ctx->len[] */
 	skb_put_data(skb, udp_pkt, sizeof(udp_pkt));
 
 	return 0;
@@ -547,7 +548,7 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 
 		ret = BPF_PROG_RUN(bi->rx_complete_prog, /*ctx=*/rx_ctx);
 		if (ret == 0) {
-			/* No more completed transmissions. */
+			/* No more received packets. */
 			break;
 		}
 		if (unlikely(ret < 0)) {
@@ -557,7 +558,7 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 
 		skb = (struct sk_buff *)rx_ctx->packet;
 		if (unlikely(!skb)) {
-			printk("rxc() bug: skb not allocated\n");
+			printk("rxc() hv bug: skb not allocated\n");
 			break;
 		}
 
