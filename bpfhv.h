@@ -103,6 +103,9 @@ enum bpfhv_helper_id {
 #define BPFHV_IO_NUM_TX_QUEUES		12
 #define BPFHV_IO_NUM_RX_SLOTS		16
 #define BPFHV_IO_NUM_TX_SLOTS		20
-#define BPFHV_IO_END			24
+#define BPFHV_IO_QUEUE_SELECT		24
+#define BPFHV_IO_CTX_PADDR_LO		28
+#define BPFHV_IO_CTX_PADDR_HI		32
+#define BPFHV_IO_END			36
 #define BPFHV_IO_MASK			0xff
 
