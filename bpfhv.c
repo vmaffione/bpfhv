@@ -473,7 +473,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	int ret;
 
 	nr_frags = skb_shinfo(skb)->nr_frags;
-	if (unlikely(nr_frags + 1 > BPFHV_MAX_TX_SLOTS)) {
+	if (unlikely(nr_frags + 1 > BPFHV_MAX_TX_BUFS)) {
 		dev_kfree_skb_any(skb);
 		return NETDEV_TX_OK;
 	}
@@ -576,8 +576,8 @@ bpfhv_rx_refill(struct bpfhv_info *bi)
 	while (bi->rx_free_slots > 0) {
 		size_t n = bi->rx_free_slots;
 
-		if (n > BPFHV_MAX_RX_SLOTS) {
-			n = BPFHV_MAX_RX_SLOTS;
+		if (n > BPFHV_MAX_RX_BUFS) {
+			n = BPFHV_MAX_RX_BUFS;
 		}
 
 		/* Prepare the context for publishing receive buffers. */

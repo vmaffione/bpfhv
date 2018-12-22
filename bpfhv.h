@@ -44,9 +44,9 @@ struct bpfhv_tx_context {
 	 * all the other fields are invalid.
 	 */
 	uint64_t	cookie;
-#define BPFHV_MAX_TX_SLOTS		64
-	uint64_t	phys[BPFHV_MAX_TX_SLOTS];
-	uint32_t	len[BPFHV_MAX_TX_SLOTS];
+#define BPFHV_MAX_TX_BUFS		64
+	uint64_t	phys[BPFHV_MAX_TX_BUFS];
+	uint32_t	len[BPFHV_MAX_TX_BUFS];
 	uint32_t	num_slots;
 	uint32_t	pad[15];
 
@@ -75,10 +75,10 @@ struct bpfhv_rx_context {
 	 * All the other fields are invalid.
 	 */
 	uint64_t	packet;
-#define BPFHV_MAX_RX_SLOTS		64
-	uint64_t	buf_cookie[BPFHV_MAX_RX_SLOTS];
-	uint64_t	phys[BPFHV_MAX_RX_SLOTS];
-	uint32_t	len[BPFHV_MAX_RX_SLOTS];
+#define BPFHV_MAX_RX_BUFS		64
+	uint64_t	buf_cookie[BPFHV_MAX_RX_BUFS];
+	uint64_t	phys[BPFHV_MAX_RX_BUFS];
+	uint32_t	len[BPFHV_MAX_RX_BUFS];
 	uint32_t	num_slots;
 	uint32_t	pad[15];
 
@@ -108,8 +108,8 @@ enum bpfhv_helper_id {
 #define BPFHV_IO_NUM_TX_QUEUES		12
 
 /* The maximum number of pending buffers for receive and transmit queues. */
-#define BPFHV_IO_NUM_RX_SLOTS		16
-#define BPFHV_IO_NUM_TX_SLOTS		20
+#define BPFHV_IO_NUM_RX_BUFS		16
+#define BPFHV_IO_NUM_TX_BUFS		20
 
 /* Size of per-queue context for receive and transmit queues. The context
  * size includes the size of struct bpfhv_rx_context (or struct
