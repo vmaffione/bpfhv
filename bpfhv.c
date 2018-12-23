@@ -161,10 +161,20 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	netdev->netdev_ops = &bpfhv_netdev_ops;
 
+	/* Read MAC address from device registers and put it into the
+	 * netdev struct. */
 	{
-		uint8_t macaddr[6] = {
-			0x00, 0x0a, 0x0b, 0x0c, 0x01, 0x02
-		};
+		uint8_t macaddr[6];
+		uint32_t macreg;
+
+		macreg = ioread32(ioaddr + BPFHV_IO_MAC_HI);
+		macaddr[0] = (macreg >> 8) & 0xff;
+		macaddr[1] = macreg & 0xff;
+		macreg = ioread32(ioaddr + BPFHV_IO_MAC_LO);
+		macaddr[2] = (macreg >> 24) & 0xff;
+		macaddr[3] = (macreg >> 16) & 0xff;
+		macaddr[4] = (macreg >> 8) & 0xff;
+		macaddr[5] = macreg & 0xff;
 		memcpy(netdev->dev_addr, macaddr, netdev->addr_len);
 	}
 
