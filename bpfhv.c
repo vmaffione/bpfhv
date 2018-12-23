@@ -24,10 +24,16 @@
 #include <linux/bpf.h>		/* struct bpf_prog_aux */
 #include <linux/netdevice.h>
 #include <linux/random.h>	/* get_random_bytes() */
+#include <linux/pci.h>
 
 #include "bpfhv.h"
 
 struct bpfhv_info {
+	/* PCI information. */
+	struct pci_dev *pdev;
+	int bars;
+	u8* __iomem ioaddr;
+
 	struct net_device		*netdev;
 	struct napi_struct		napi;
 
@@ -59,8 +65,10 @@ struct bpfhv_info {
 	struct timer_list		intr_tmr;
 };
 
-static int		bpfhv_netdev_setup(struct bpfhv_info **bip);
-static void		bpfhv_netdev_teardown(struct bpfhv_info *bi);
+static int		bpfhv_probe(struct pci_dev *pdev,
+					const struct pci_device_id *id);
+static void		bpfhv_remove(struct pci_dev *pdev);
+static void		bpfhv_shutdown(struct pci_dev *pdev);
 static int		bpfhv_programs_setup(struct bpfhv_info *bi);
 static int		bpfhv_helper_calls_fixup(struct bpfhv_info *bi,
 						struct bpf_insn *insns,
@@ -90,23 +98,63 @@ static const struct net_device_ops bpfhv_netdev_ops = {
 };
 
 static int
-bpfhv_netdev_setup(struct bpfhv_info **bip)
+bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	const unsigned int queue_pairs = 1;
 	struct net_device *netdev;
 	struct bpfhv_info *bi;
+	u8* __iomem ioaddr;
+	int bars;
 	int ret;
+
+	/* PCI initialization. */
+	bars = pci_select_bars(pdev, IORESOURCE_MEM | IORESOURCE_IO);
+	ret = pci_enable_device(pdev);
+	if (ret) {
+		return ret;
+	}
+
+	ret = pci_request_selected_regions(pdev, bars, "bpfhv");
+	if (ret) {
+		goto err_pci_req_reg;
+	}
+
+	pci_set_master(pdev);
+	ret = pci_save_state(pdev);
+	if (ret) {
+		goto err_iomap;
+	}
+
+	ret = -EIO;
+	printk("IO BAR: start 0x%llx, len %llu, flags 0x%lx\n",
+		pci_resource_start(pdev, BPFHV_IO_PCI_BAR),
+		pci_resource_len(pdev, BPFHV_IO_PCI_BAR),
+		pci_resource_flags(pdev, BPFHV_IO_PCI_BAR));
+	printk("PROG MMIO BAR: start 0x%llx, len %llu, flags 0x%lx\n",
+		pci_resource_start(pdev, BPFHV_PROG_PCI_BAR),
+		pci_resource_len(pdev, BPFHV_PROG_PCI_BAR),
+		pci_resource_flags(pdev, BPFHV_PROG_PCI_BAR));
+
+	ioaddr = pci_iomap(pdev, BPFHV_IO_PCI_BAR, 0);
+	if (!ioaddr) {
+		goto err_iomap;
+	}
 
 	netdev = alloc_etherdev_mq(sizeof(*bi), queue_pairs);
 	if (!netdev) {
 		printk("Failed to allocate net device\n");
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto err_alloc_eth;
 	}
 
 	/* Cross-link data structures. */
-	SET_NETDEV_DEV(netdev, NULL);
+	SET_NETDEV_DEV(netdev, &pdev->dev);
+	pci_set_drvdata(pdev, netdev);
 	bi = netdev_priv(netdev);
 	bi->netdev = netdev;
+	bi->pdev = pdev;
+	bi->bars = bars;
+	bi->ioaddr = ioaddr;
 
 	netdev->netdev_ops = &bpfhv_netdev_ops;
 
@@ -140,27 +188,44 @@ bpfhv_netdev_setup(struct bpfhv_info **bip)
 
 	netif_carrier_on(netdev);
 
-	*bip = bi;
-
 	return 0;
 err_reg:
 	bpfhv_programs_teardown(bi);
 err_prog:
 	free_netdev(netdev);
+err_alloc_eth:
+	iounmap(ioaddr);
+err_iomap:
+	pci_release_selected_regions(pdev, bars);
+err_pci_req_reg:
+	pci_disable_device(pdev);
 
 	return ret;
 }
 
+/* Called when the device is being detached from this driver (e.g. when
+ * this kernel module is going to be removed. */
 static void
-bpfhv_netdev_teardown(struct bpfhv_info *bi)
+bpfhv_remove(struct pci_dev *pdev)
 {
-	struct net_device *netdev = bi->netdev;
+	struct net_device *netdev = pci_get_drvdata(pdev);
+	struct bpfhv_info *bi = netdev_priv(netdev);
 
 	netif_carrier_off(netdev);
 	netif_napi_del(&bi->napi);
 	unregister_netdev(netdev);
 	bpfhv_programs_teardown(bi);
+	iounmap(bi->ioaddr);
+	pci_release_selected_regions(pdev, bi->bars);
 	free_netdev(netdev);
+	pci_disable_device(pdev);
+}
+
+/* Called when the system is going to power off or reboot. */
+static void
+bpfhv_shutdown(struct pci_dev *pdev)
+{
+	pci_disable_device(pdev);
 }
 
 static const uint8_t udp_pkt[] = {
@@ -737,24 +802,45 @@ test_bpf_programs(void)
 }
 #endif  /* TEST */
 
-static struct bpfhv_info *__bip = NULL;
+/* List of (VendorID, DeviceID) pairs supported by this driver. */
+static struct pci_device_id bpfhv_device_table[] = {
+	{ PCI_DEVICE(BPFHV_PCI_VENDOR_ID, BPFHV_PCI_DEVICE_ID), },
+	{ 0, }
+};
+
+MODULE_DEVICE_TABLE(pci, bpfhv_device_table);
+
+/* PCI driver information. */
+static struct pci_driver bpfhv_driver = {
+	.name       = "bpfhv",
+	.id_table   = bpfhv_device_table,
+	.probe      = bpfhv_probe,
+	.remove     = bpfhv_remove,
+	.shutdown   = bpfhv_shutdown,
+};
 
 static int __init
 bpfhv_init(void)
 {
+	int ret;
+
 #ifdef TEST
 	test_bpf_programs();
 #endif  /* TEST */
 
-	return bpfhv_netdev_setup(&__bip);
+	ret = pci_register_driver(&bpfhv_driver);
+	if (ret < 0) {
+		printk("Failed to register PCI driver (error=%d)\n", ret);
+		return ret;
+	}
+
+	return 0;
 }
 
 static void __exit
 bpfhv_fini(void)
 {
-	if (__bip) {
-		bpfhv_netdev_teardown(__bip);
-	}
+	pci_unregister_driver(&bpfhv_driver);
 }
 
 module_init(bpfhv_init);
