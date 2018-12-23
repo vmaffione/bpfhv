@@ -92,12 +92,16 @@ enum bpfhv_helper_id {
 	BPFHV_pkt_alloc = BPFHV_HELPER_MAGIC,
 };
 
-/* PCI device definitions, including PCI identifiers,
- * BAR numbers, and device registers. */
+
+/*
+ * PCI device definitions, including PCI identifiers,
+ * BAR numbers, and device registers.
+ */
 #define BPFHV_PCI_VENDOR_ID		0x1b36 /* qemu virtual devices */
 #define BPFHV_PCI_DEVICE_ID		0x000e
 #define BPFHV_IO_PCI_BAR		0
-#define BPFHV_MSIX_PCI_BAR		1
+#define BPFHV_DOORBELL_PCI_BAR		1
+#define BPFHV_MSIX_PCI_BAR		2
 
 /*
  * Device status register:
