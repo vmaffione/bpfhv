@@ -167,6 +167,7 @@ enum {
 	BPFHV_PROG_MAX,
 };
 #define BPFHV_IO_PROG_SIZE		56
+#define BPFHV_PROG_SIZE_MAX		16384
 
 /* Marker for the end of known registers, and size of the I/O region. */
 #define BPFHV_IO_END			60
