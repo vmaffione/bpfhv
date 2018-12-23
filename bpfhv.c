@@ -159,7 +159,10 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	bi->bars = bars;
 	bi->ioaddr = ioaddr;
 
-	netdev->netdev_ops = &bpfhv_netdev_ops;
+	bi->rx_slots = ioread32(ioaddr + BPFHV_IO_NUM_RX_BUFS);
+	bi->tx_slots = ioread32(ioaddr + BPFHV_IO_NUM_TX_BUFS);
+	bi->rx_ctx_size = ioread32(ioaddr + BPFHV_IO_RX_CTX_SIZE);
+	bi->tx_ctx_size = ioread32(ioaddr + BPFHV_IO_TX_CTX_SIZE);
 
 	/* Read MAC address from device registers and put it into the
 	 * netdev struct. */
@@ -177,6 +180,8 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		macaddr[5] = macreg & 0xff;
 		memcpy(netdev->dev_addr, macaddr, netdev->addr_len);
 	}
+
+	netdev->netdev_ops = &bpfhv_netdev_ops;
 
 	netdev->features = NETIF_F_HIGHDMA;
 	netif_set_real_num_tx_queues(netdev, queue_pairs);
@@ -300,8 +305,6 @@ bpfhv_prog_dump(const char *progname, struct bpf_insn *insns,
 static int
 bpfhv_programs_setup(struct bpfhv_info *bi)
 {
-	const size_t ctx_size = sizeof(struct bpfhv_tx_context) + 1024;
-	const size_t num_slots = 256;
 	struct bpf_insn txp_insns[] = {
 		/* R2 = *(u64 *)(R1 + sizeof(ctx)) */
 		BPF_LDX_MEM(BPF_DW, BPF_REG_2, BPF_REG_1,
@@ -403,12 +406,11 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 	}
 
 	/* Allocate all the eBPF programs and the associated context. */
-	bi->tx_ctx_size = ctx_size;
 	bi->tx_ctx = kzalloc(bi->tx_ctx_size, GFP_KERNEL);
 	if (bi->tx_ctx == NULL) {
 		goto err;
 	}
-	bi->tx_slots = bi->tx_free_slots = num_slots;
+	bi->tx_free_slots = bi->tx_slots;
 
 	bi->tx_publish_prog = bpfhv_prog_alloc("txp", txp_insns,
 						ARRAY_SIZE(txp_insns));
@@ -422,12 +424,11 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		goto err;
 	}
 
-	bi->rx_ctx_size = ctx_size;
 	bi->rx_ctx = kzalloc(bi->rx_ctx_size, GFP_KERNEL);
 	if (bi->rx_ctx == NULL) {
 		goto err;
 	}
-	bi->rx_slots = bi->rx_free_slots = num_slots;
+	bi->rx_free_slots = bi->rx_slots;
 
 	bi->rx_publish_prog = bpfhv_prog_alloc("rxp", rxp_insns,
 						ARRAY_SIZE(rxp_insns));
