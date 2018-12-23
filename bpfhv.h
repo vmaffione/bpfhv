@@ -102,6 +102,7 @@ enum bpfhv_helper_id {
 #define BPFHV_IO_PCI_BAR		0
 #define BPFHV_DOORBELL_PCI_BAR		1
 #define BPFHV_MSIX_PCI_BAR		2
+#define BPFHV_PROG_PCI_BAR		3
 
 /*
  * Device status register:
@@ -152,7 +153,18 @@ enum bpfhv_helper_id {
 #define BPFHV_IO_CTX_PADDR_LO		44
 #define BPFHV_IO_CTX_PADDR_HI		48
 
+/* Select the eBPF program to be read from the device. A guest can write to
+ * the select register, and then read the program size (BPFHV_IO_PROG_SIZE)
+ * and the actual eBPF code. The program size is expressed as a number of
+ * eBPF instructions (with each instruction being 8 bytes wide). */
+#define BPFHV_IO_PROG_SELECT		52
+#define		BPFHV_PROG_TX_PUBLISH	1
+#define		BPFHV_PROG_TX_COMPLETE	2
+#define		BPFHV_PROG_RX_PUBLISH	3
+#define		BPFHV_PROG_RX_COMPLETE	4
+#define BPFHV_IO_PROG_SIZE		56
+
 /* Marker for the end of known registers, and size of the I/O region. */
-#define BPFHV_IO_END			52
+#define BPFHV_IO_END			60
 #define BPFHV_IO_MASK			0xff
 
