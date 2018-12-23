@@ -99,38 +99,45 @@ enum bpfhv_helper_id {
 #define BPFHV_IO_PCI_BAR		0
 #define BPFHV_MSIX_PCI_BAR		1
 
+/*
+ * Device status register:
+ *   - bit 0: link status: value is 0 if link is down, 1 if link is up
+ */
+#define BPFHV_IO_STATUS			0
+#define		BPFHV_STATUS_LINK	(1 << 0)
+
 /* Device MAC address: the least significant 32 bits of the address are taken
  * from MAC_LO, while the most significant 16 bits are taken from the least
  * significant 16 bits of MAC_HI. */
-#define BPFHV_IO_MAC_LO			0
-#define BPFHV_IO_MAC_HI			4
+#define BPFHV_IO_MAC_LO			4
+#define BPFHV_IO_MAC_HI			8
 
 /* Number of receive and transmit queues implemented by the device. */
-#define BPFHV_IO_NUM_RX_QUEUES		8
-#define BPFHV_IO_NUM_TX_QUEUES		12
+#define BPFHV_IO_NUM_RX_QUEUES		12
+#define BPFHV_IO_NUM_TX_QUEUES		16
 
 /* The maximum number of pending buffers for receive and transmit queues. */
-#define BPFHV_IO_NUM_RX_BUFS		16
-#define BPFHV_IO_NUM_TX_BUFS		20
+#define BPFHV_IO_NUM_RX_BUFS		20
+#define BPFHV_IO_NUM_TX_BUFS		24
 
 /* Size of per-queue context for receive and transmit queues. The context
  * size includes the size of struct bpfhv_rx_context (or struct
  * bpfhv_tx_context) plus the size of hypervisor-specific data structures. */
-#define BPFHV_IO_RX_CTX_SIZE            24
-#define BPFHV_IO_TX_CTX_SIZE            28
+#define BPFHV_IO_RX_CTX_SIZE            28
+#define BPFHV_IO_TX_CTX_SIZE            32
 
 /* A register where the guest can write the index of a receive or transmit queue,
  * and subsequently perform an operation on that queue. Indices in
  * [0, NUM_RX_QUEUES-1] reference receive queues, whereas indices in
  * [NUM_RX_QUEUES, NUM_RX_QUEUES + NUM_TX_QUEUES - 1]. */
-#define BPFHV_IO_QUEUE_SELECT		32
+#define BPFHV_IO_QUEUE_SELECT		36
 
 /* A register where the guest can write the physical address of the receive or
  * transmit context for the selected queue. */
-#define BPFHV_IO_CTX_PADDR_LO		36
-#define BPFHV_IO_CTX_PADDR_HI		40
+#define BPFHV_IO_CTX_PADDR_LO		40
+#define BPFHV_IO_CTX_PADDR_HI		44
 
 /* Marker for the end of known registers, and size of the I/O region. */
-#define BPFHV_IO_END			44
+#define BPFHV_IO_END			48
 #define BPFHV_IO_MASK			0xff
 
