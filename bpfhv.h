@@ -126,18 +126,29 @@ enum bpfhv_helper_id {
 #define BPFHV_IO_RX_CTX_SIZE            28
 #define BPFHV_IO_TX_CTX_SIZE            32
 
-/* A register where the guest can write the index of a receive or transmit queue,
- * and subsequently perform an operation on that queue. Indices in
- * [0, NUM_RX_QUEUES-1] reference receive queues, whereas indices in
- * [NUM_RX_QUEUES, NUM_RX_QUEUES + NUM_TX_QUEUES - 1]. */
-#define BPFHV_IO_QUEUE_SELECT		36
+/* A guest can notify a queue by writing (any value) to a per-queue doorbell
+ * register. Doorbell registers are exposed through a separate memory-mapped
+ * I/O region, and laid out as an array. The BPFHV_IO_DOORBELL_SIZE reports
+ * the size of each slot in the array. Writing to any address within the i-th
+ * slot will ring the i-th doorbell. Indices in [0, NUM_RX_QUEUES-1] reference
+ * receive queues, while transmit queues correspond to indices in
+ * [NUM_RX_QUEUES, NUM_RX_QUEUES + NUM_TX_QUEUES - 1].
+ */
+#define BPFHV_IO_DOORBELL_SIZE		36
+
+/* A register where the guest can write the index of a receive or transmit
+ * queue, and subsequently perform an operation on that queue. Indices in
+ * [0, NUM_RX_QUEUES-1] reference receive queues, while transmit queues
+ * correspond to indices in [NUM_RX_QUEUES, NUM_RX_QUEUES + NUM_TX_QUEUES - 1].
+ */
+#define BPFHV_IO_QUEUE_SELECT		40
 
 /* A register where the guest can write the physical address of the receive or
  * transmit context for the selected queue. */
-#define BPFHV_IO_CTX_PADDR_LO		40
-#define BPFHV_IO_CTX_PADDR_HI		44
+#define BPFHV_IO_CTX_PADDR_LO		44
+#define BPFHV_IO_CTX_PADDR_HI		48
 
 /* Marker for the end of known registers, and size of the I/O region. */
-#define BPFHV_IO_END			48
+#define BPFHV_IO_END			52
 #define BPFHV_IO_MASK			0xff
 
