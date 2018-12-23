@@ -100,7 +100,7 @@ static const struct net_device_ops bpfhv_netdev_ops = {
 static int
 bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
-	const unsigned int queue_pairs = 1;
+	unsigned int num_rx_queues, num_tx_queues, queue_pairs;
 	struct net_device *netdev;
 	struct bpfhv_info *bi;
 	u8* __iomem ioaddr;
@@ -125,7 +125,6 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_iomap;
 	}
 
-	ret = -EIO;
 	printk("IO BAR: start 0x%llx, len %llu, flags 0x%lx\n",
 		pci_resource_start(pdev, BPFHV_IO_PCI_BAR),
 		pci_resource_len(pdev, BPFHV_IO_PCI_BAR),
@@ -137,9 +136,13 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	ioaddr = pci_iomap(pdev, BPFHV_IO_PCI_BAR, 0);
 	if (!ioaddr) {
+		ret = -EIO;
 		goto err_iomap;
 	}
 
+	num_tx_queues = ioread32(ioaddr + BPFHV_IO_NUM_TX_QUEUES);
+	num_rx_queues = ioread32(ioaddr + BPFHV_IO_NUM_RX_QUEUES);
+	queue_pairs = min(num_tx_queues, num_rx_queues);
 	netdev = alloc_etherdev_mq(sizeof(*bi), queue_pairs);
 	if (!netdev) {
 		printk("Failed to allocate net device\n");
