@@ -189,6 +189,36 @@ BPF_CALL_1(bpf_hv_pkt_alloc, struct bpfhv_rx_context *, ctx)
 	return 0;
 }
 
+#undef PROGDUMP
+#ifdef PROGDUMP
+static void
+bpfhv_prog_dump(const char *progname, struct bpf_insn *insns,
+		size_t insns_count)
+{
+	size_t dumpsz = strlen(progname) + (2+16+1) * insns_count + 30;
+	char *dump = kmalloc(dumpsz, GFP_KERNEL);
+	size_t ofs = 0;
+	uint64_t *ip;
+	int i = 0;
+
+	if (!dump) {
+		return;
+	}
+
+	ofs += snprintf(dump + ofs, dumpsz - ofs, "%s: {", progname);
+	for (i = 0; i < insns_count; i++) {
+		if (i > 0) {
+			ofs += snprintf(dump + ofs, dumpsz - ofs, ",");
+		}
+		ip = (uint64_t *)(insns + i);
+		ofs += snprintf(dump + ofs, dumpsz - ofs, "0x%llx", *ip);
+	}
+	ofs += snprintf(dump + ofs, dumpsz - ofs, "}\n");
+	printk("%s\n", dump);
+	kfree(dump);
+}
+#endif /* PROGDUMP */
+
 static int
 bpfhv_programs_setup(struct bpfhv_info *bi)
 {
@@ -261,6 +291,13 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		BPF_EXIT_INSN(),
 	};
 	int ret;
+
+#ifdef PROGDUMP
+	bpfhv_prog_dump("txp", txp_insns, ARRAY_SIZE(txp_insns));
+	bpfhv_prog_dump("txc", txc_insns, ARRAY_SIZE(txc_insns));
+	bpfhv_prog_dump("rxp", rxp_insns, ARRAY_SIZE(rxp_insns));
+	bpfhv_prog_dump("rxc", rxc_insns, ARRAY_SIZE(rxc_insns));
+#endif
 
 	/* Deallocate previous eBPF programs and the associated context. */
 	bpfhv_programs_teardown(bi);
