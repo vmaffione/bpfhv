@@ -158,10 +158,14 @@ enum bpfhv_helper_id {
  * and the actual eBPF code. The program size is expressed as a number of
  * eBPF instructions (with each instruction being 8 bytes wide). */
 #define BPFHV_IO_PROG_SELECT		52
-#define		BPFHV_PROG_TX_PUBLISH	1
-#define		BPFHV_PROG_TX_COMPLETE	2
-#define		BPFHV_PROG_RX_PUBLISH	3
-#define		BPFHV_PROG_RX_COMPLETE	4
+enum {
+	BPFHV_PROG_NONE = 0,
+	BPFHV_PROG_TX_PUBLISH,
+	BPFHV_PROG_TX_COMPLETE,
+	BPFHV_PROG_RX_PUBLISH,
+	BPFHV_PROG_RX_COMPLETE,
+	BPFHV_PROG_MAX,
+};
 #define BPFHV_IO_PROG_SIZE		56
 
 /* Marker for the end of known registers, and size of the I/O region. */
