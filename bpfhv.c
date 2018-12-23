@@ -43,11 +43,11 @@ struct bpfhv_info {
 	/* Context for the transmit programs. */
 	struct bpfhv_tx_context		*tx_ctx;
 	size_t				tx_ctx_size;
-	/* Maximum number of slots available for transmission. */
-	size_t				tx_slots;
-	/* Number of slots currently available for the guest to transmit
+	/* Maximum number of bufs available for transmission. */
+	size_t				tx_bufs;
+	/* Number of bufs currently available for the guest to transmit
 	 * more packets. */
-	size_t				tx_free_slots;
+	size_t				tx_free_bufs;
 
 	/* Receive programs: publish and completion. */
 	struct bpf_prog			*rx_publish_prog;
@@ -55,11 +55,11 @@ struct bpfhv_info {
 	/* Context for the receive programs. */
 	struct bpfhv_rx_context		*rx_ctx;
 	size_t				rx_ctx_size;
-	/* Maximum number of slots available for receive operation. */
-	size_t				rx_slots;
-	/* Number of slots currently available for the guest to publish
+	/* Maximum number of bufs available for receive operation. */
+	size_t				rx_bufs;
+	/* Number of bufs currently available for the guest to publish
 	 * more receive buffers. */
-	size_t				rx_free_slots;
+	size_t				rx_free_bufs;
 
 	/* Temporary timer for interrupt emulation. */
 	struct timer_list		intr_tmr;
@@ -159,8 +159,8 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	bi->bars = bars;
 	bi->ioaddr = ioaddr;
 
-	bi->rx_slots = ioread32(ioaddr + BPFHV_IO_NUM_RX_BUFS);
-	bi->tx_slots = ioread32(ioaddr + BPFHV_IO_NUM_TX_BUFS);
+	bi->rx_bufs = ioread32(ioaddr + BPFHV_IO_NUM_RX_BUFS);
+	bi->tx_bufs = ioread32(ioaddr + BPFHV_IO_NUM_TX_BUFS);
 	bi->rx_ctx_size = ioread32(ioaddr + BPFHV_IO_RX_CTX_SIZE);
 	bi->tx_ctx_size = ioread32(ioaddr + BPFHV_IO_TX_CTX_SIZE);
 
@@ -410,7 +410,7 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 	if (bi->tx_ctx == NULL) {
 		goto err;
 	}
-	bi->tx_free_slots = bi->tx_slots;
+	bi->tx_free_bufs = bi->tx_bufs;
 
 	bi->tx_publish_prog = bpfhv_prog_alloc("txp", txp_insns,
 						ARRAY_SIZE(txp_insns));
@@ -428,7 +428,7 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 	if (bi->rx_ctx == NULL) {
 		goto err;
 	}
-	bi->rx_free_slots = bi->rx_slots;
+	bi->rx_free_bufs = bi->rx_bufs;
 
 	bi->rx_publish_prog = bpfhv_prog_alloc("rxp", rxp_insns,
 						ARRAY_SIZE(rxp_insns));
@@ -594,7 +594,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		return NETDEV_TX_OK;
 	}
 
-	if (bi->tx_free_slots < nr_frags + 1) {
+	if (bi->tx_free_bufs < nr_frags + 1) {
 		return NETDEV_TX_BUSY;
 	}
 
@@ -624,8 +624,8 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		tx_ctx->phys[i] = (uintptr_t)NULL;
 		tx_ctx->len[i] = len;
 	}
-	tx_ctx->num_slots = i;
-	bi->tx_free_slots -= i;
+	tx_ctx->num_bufs = i;
+	bi->tx_free_bufs -= i;
 
 	/* Of course we should not free the skb, but for now we know that
 	 * the txp program is a stub. */
@@ -678,7 +678,7 @@ bpfhv_tx_clean(struct bpfhv_info *bi)
 
 	if (count) {
 		printk("txc() --> %d packets\n", count);
-		bi->tx_free_slots += count;
+		bi->tx_free_bufs += count;
 	}
 }
 
@@ -689,8 +689,8 @@ bpfhv_rx_refill(struct bpfhv_info *bi)
 	unsigned int i;
 	int ret;
 
-	while (bi->rx_free_slots > 0) {
-		size_t n = bi->rx_free_slots;
+	while (bi->rx_free_bufs > 0) {
+		size_t n = bi->rx_free_bufs;
 
 		if (n > BPFHV_MAX_RX_BUFS) {
 			n = BPFHV_MAX_RX_BUFS;
@@ -702,8 +702,8 @@ bpfhv_rx_refill(struct bpfhv_info *bi)
 			rx_ctx->phys[i] = (uintptr_t)NULL;
 			rx_ctx->len[i] = 70;
 		}
-		rx_ctx->num_slots = i;
-		bi->rx_free_slots -= i;
+		rx_ctx->num_bufs = i;
+		bi->rx_free_bufs -= i;
 
 		ret = BPF_PROG_RUN(bi->rx_publish_prog, /*ctx=*/bi->rx_ctx);
 		printk("rxp(%u bufs) --> %d\n", i, ret);

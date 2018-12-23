@@ -34,11 +34,11 @@ struct bpfhv_tx_context {
 	uint64_t	guest_priv;
 	/*
 	 * Array of physical addresses and lengths, representing a
-	 * scatter-gather buffer. The number of valid slots is stored
-	 * in 'num_slots'. Guest OS packet reference (e.g., pointer to sk_buff
+	 * scatter-gather buffer. The number of valid bufs is stored
+	 * in 'num_bufs'. Guest OS packet reference (e.g., pointer to sk_buff
 	 * or mbuf) can be stored in 'cookie'.
 	 *
-	 * On publication, 'phys', 'len', 'cookie' and 'num_slots'
+	 * On publication, 'phys', 'len', 'cookie' and 'num_bufs'
 	 * are input argument for the eBPF program.
 	 * On completion, 'cookie' is an output argument, while
 	 * all the other fields are invalid.
@@ -47,7 +47,7 @@ struct bpfhv_tx_context {
 #define BPFHV_MAX_TX_BUFS		64
 	uint64_t	phys[BPFHV_MAX_TX_BUFS];
 	uint32_t	len[BPFHV_MAX_TX_BUFS];
-	uint32_t	num_slots;
+	uint32_t	num_bufs;
 	uint32_t	pad[15];
 
 	/* Private hv-side context follows here. */
@@ -61,12 +61,12 @@ struct bpfhv_rx_context {
 	uint64_t	guest_priv;
 	/*
 	 * Array of physical addresses and lengths, representing a set of
-	 * buffers. The number of valid slots is stored in 'num_slots'.
+	 * buffers. The number of valid bufs is stored in 'num_bufs'.
 	 * The buffer cookies can be used by the guest OS to identify the
 	 * buffers when building the OS packet (e.g. sk_buff or mbuf).
 	 * A reference to the OS packet can be stored in 'packet'.
 	 *
-	 * On publication, 'phys', 'len', 'buf_cookie' and 'num_slots'
+	 * On publication, 'phys', 'len', 'buf_cookie' and 'num_bufs'
 	 * are input arguments for the eBPF program, and the 'packet'
 	 * field is invalid.
 	 * On receiving, 'packet' is an output argument, and it contains
@@ -79,7 +79,7 @@ struct bpfhv_rx_context {
 	uint64_t	buf_cookie[BPFHV_MAX_RX_BUFS];
 	uint64_t	phys[BPFHV_MAX_RX_BUFS];
 	uint32_t	len[BPFHV_MAX_RX_BUFS];
-	uint32_t	num_slots;
+	uint32_t	num_bufs;
 	uint32_t	pad[15];
 
 	/* Private hv-side context follows here. */
