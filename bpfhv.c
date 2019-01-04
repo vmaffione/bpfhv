@@ -376,6 +376,18 @@ progname_from_idx(unsigned int prog_idx)
 	return NULL;
 }
 
+static void
+ctx_paddr_write(struct bpfhv_info *bi, unsigned int qidx, void *vaddr)
+{
+	phys_addr_t paddr = virt_to_phys(vaddr);
+
+	iowrite32(qidx, bi->ioaddr + BPFHV_IO_QUEUE_SELECT);
+	iowrite32((paddr >> 32) & 0xffffffff,
+			bi->ioaddr + BPFHV_IO_CTX_PADDR_HI);
+	iowrite32(paddr & 0xffffffff,
+			bi->ioaddr + BPFHV_IO_CTX_PADDR_LO);
+}
+
 static int
 bpfhv_programs_setup(struct bpfhv_info *bi)
 {
@@ -512,6 +524,7 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		}
 		rxq->rx_free_bufs = bi->rx_bufs;
 		rxq->rx_ctx->guest_priv = (uintptr_t)rxq;
+		ctx_paddr_write(bi, i, rxq->rx_ctx);
 	}
 
 	for (i = 0; i < bi->num_tx_queues; i++) {
@@ -523,6 +536,7 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		}
 		txq->tx_free_bufs = bi->tx_bufs;
 		txq->tx_ctx->guest_priv = (uintptr_t)txq;
+		ctx_paddr_write(bi, bi->num_rx_queues + i, txq->tx_ctx);
 	}
 
 	ret = 0;
