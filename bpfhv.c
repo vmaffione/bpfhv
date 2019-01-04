@@ -38,9 +38,9 @@ struct bpfhv_info {
 	struct net_device		*netdev;
 	struct napi_struct		napi;
 
-	/* Transmit programs: publish and completion. */
-	struct bpf_prog			*tx_publish_prog;
-	struct bpf_prog			*tx_complete_prog;
+	/* Transmit and receive programs (publish and completion). */
+	struct bpf_prog			*progs[BPFHV_PROG_MAX];
+
 	/* Context for the transmit programs. */
 	struct bpfhv_tx_context		*tx_ctx;
 	size_t				tx_ctx_size;
@@ -50,9 +50,6 @@ struct bpfhv_info {
 	 * more packets. */
 	size_t				tx_free_bufs;
 
-	/* Receive programs: publish and completion. */
-	struct bpf_prog			*rx_publish_prog;
-	struct bpf_prog			*rx_complete_prog;
 	/* Context for the receive programs. */
 	struct bpfhv_rx_context		*rx_ctx;
 	size_t				rx_ctx_size;
@@ -314,9 +311,29 @@ bpfhv_prog_dump(const char *progname, struct bpf_insn *insns,
 }
 #endif /* PROGDUMP */
 
+static const char *
+progname_from_idx(unsigned int prog_idx)
+{
+	switch (prog_idx) {
+	case BPFHV_PROG_TX_PUBLISH:
+		return "txp";
+	case BPFHV_PROG_TX_COMPLETE:
+		return "txc";
+	case BPFHV_PROG_RX_PUBLISH:
+		return "rxp";
+	case BPFHV_PROG_RX_COMPLETE:
+		return "rxc";
+	default:
+		break;
+	}
+
+	return NULL;
+}
+
 static int
 bpfhv_programs_setup(struct bpfhv_info *bi)
 {
+#if 0
 	struct bpf_insn txp_insns[] = {
 		/* R2 = *(u64 *)(R1 + sizeof(ctx)) */
 		BPF_LDX_MEM(BPF_DW, BPF_REG_2, BPF_REG_1,
@@ -383,9 +400,20 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		/* return R0 */
 		BPF_EXIT_INSN(),
 	};
-	struct bpf_insn *progs[BPFHV_PROG_MAX];
-	int ret;
+#endif
+	struct bpf_insn *insns;
+	int ret = -EIO;
 	int i;
+
+	insns = kmalloc(BPFHV_PROG_SIZE_MAX * sizeof(struct bpf_insn),
+			GFP_KERNEL);
+	if (!insns) {
+		printk("Failed to allocate memory for instructions\n");
+		return -ENOMEM;
+	}
+
+	/* Deallocate previous eBPF programs and the associated contexts. */
+	bpfhv_programs_teardown(bi);
 
 	for (i = BPFHV_PROG_NONE + 1; i < BPFHV_PROG_MAX; i++) {
 		uint32_t *progp;
@@ -397,105 +425,61 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		if (prog_len == 0 || prog_len > BPFHV_PROG_SIZE_MAX) {
 			printk("Invalid program length %u\n",
 				(unsigned int)prog_len);
-			return -1;
-		}
-		progs[i] = kzalloc(prog_len * sizeof(struct bpf_insn),
-					GFP_KERNEL);
-		if (progs[i] == NULL) {
-			printk("Failed to allocate memory for program #%d\n",
-				i);
-			return -ENOMEM;
+			goto out;
 		}
 
 		jmax = (prog_len * sizeof(struct bpf_insn)) / sizeof(*progp);
-		progp = (uint32_t *)progs[i];
+		progp = (uint32_t *)insns;
 		for (j = 0; j < jmax; j++, progp++) {
 			*progp = readl(bi->progmmio_addr +
 					j * sizeof(*progp));
 		}
 
 #ifdef PROGDUMP
-		bpfhv_prog_dump("progX", progs[i], prog_len);
-#endif
-		kfree(progs[i]);
-	}
-
-#ifdef PROGDUMP
-	bpfhv_prog_dump("txp", txp_insns, ARRAY_SIZE(txp_insns));
-	bpfhv_prog_dump("txc", txc_insns, ARRAY_SIZE(txc_insns));
-	bpfhv_prog_dump("rxp", rxp_insns, ARRAY_SIZE(rxp_insns));
-	bpfhv_prog_dump("rxc", rxc_insns, ARRAY_SIZE(rxc_insns));
+		bpfhv_prog_dump(progname_from_idx(i), insns, prog_len);
 #endif
 
-	/* Deallocate previous eBPF programs and the associated context. */
-	bpfhv_programs_teardown(bi);
+		/* Fix the immediate field of call instructions to helper
+		 * functions, replacing the abstract identifiers with actual
+		 * offsets. */
+		ret = bpfhv_helper_calls_fixup(bi, insns, prog_len);
+		if (ret) {
+			goto out;
+		}
 
-	/* Fix the immediate field of call instructions to helper functions,
-	 * replacing the abstract identifiers with actual offsets. */
-	ret = bpfhv_helper_calls_fixup(bi, txp_insns, ARRAY_SIZE(txp_insns));
-	if (ret) {
-		return ret;
+		/* Allocate all the eBPF programs. */
+		bi->progs[i] = bpfhv_prog_alloc(progname_from_idx(i),
+						insns, prog_len);
+		if (bi->progs[i] == NULL) {
+			goto out;
+		}
 	}
 
-	ret = bpfhv_helper_calls_fixup(bi, txc_insns, ARRAY_SIZE(txc_insns));
-	if (ret) {
-		return ret;
-	}
 
-	ret = bpfhv_helper_calls_fixup(bi, rxp_insns, ARRAY_SIZE(rxp_insns));
-	if (ret) {
-		return ret;
-	}
-
-	ret = bpfhv_helper_calls_fixup(bi, rxc_insns, ARRAY_SIZE(rxc_insns));
-	if (ret) {
-		return ret;
-	}
-
-	/* Allocate all the eBPF programs and the associated context. */
+	/* Allocate the program context for transmit and receive operation. */
 	bi->tx_ctx = kzalloc(bi->tx_ctx_size, GFP_KERNEL);
 	if (bi->tx_ctx == NULL) {
-		goto err;
+		goto out;
 	}
 	bi->tx_free_bufs = bi->tx_bufs;
 
-	bi->tx_publish_prog = bpfhv_prog_alloc("txp", txp_insns,
-						ARRAY_SIZE(txp_insns));
-	if (bi->tx_publish_prog == NULL) {
-		goto err;
-	}
-
-	bi->tx_complete_prog = bpfhv_prog_alloc("txc", txc_insns,
-						ARRAY_SIZE(txc_insns));
-	if (bi->tx_complete_prog == NULL) {
-		goto err;
-	}
-
 	bi->rx_ctx = kzalloc(bi->rx_ctx_size, GFP_KERNEL);
 	if (bi->rx_ctx == NULL) {
-		goto err;
+		goto out;
 	}
 	bi->rx_free_bufs = bi->rx_bufs;
-
-	bi->rx_publish_prog = bpfhv_prog_alloc("rxp", rxp_insns,
-						ARRAY_SIZE(rxp_insns));
-	if (bi->rx_publish_prog == NULL) {
-		goto err;
-	}
-
-	bi->rx_complete_prog = bpfhv_prog_alloc("rxc", rxc_insns,
-						ARRAY_SIZE(rxc_insns));
-	if (bi->rx_complete_prog == NULL) {
-		goto err;
-	}
 
 	bi->tx_ctx->guest_priv = (uintptr_t)bi;
 	bi->rx_ctx->guest_priv = (uintptr_t)bi;
 
-	return 0;
-err:
-	bpfhv_programs_teardown(bi);
-	return -1;
+	ret = 0;
+out:
+	kfree(insns);
+	if (ret) {
+		bpfhv_programs_teardown(bi);
+	}
+
+	return ret;
 }
 
 static int
@@ -568,29 +552,18 @@ bpfhv_prog_alloc(const char *progname, struct bpf_insn *insns,
 static int
 bpfhv_programs_teardown(struct bpfhv_info *bi)
 {
-	if (bi->tx_publish_prog) {
-		bpf_prog_free(bi->tx_publish_prog);
-		bi->tx_publish_prog = NULL;
-	}
+	size_t i;
 
-	if (bi->tx_complete_prog) {
-		bpf_prog_free(bi->tx_complete_prog);
-		bi->tx_complete_prog = NULL;
+	for (i = BPFHV_PROG_NONE + 1; i < BPFHV_PROG_MAX; i++) {
+		if (bi->progs[i]) {
+			bpf_prog_free(bi->progs[i]);
+			bi->progs[i] = NULL;
+		}
 	}
 
 	if (bi->tx_ctx) {
 		kfree(bi->tx_ctx);
 		bi->tx_ctx = NULL;
-	}
-
-	if (bi->rx_publish_prog) {
-		bpf_prog_free(bi->rx_publish_prog);
-		bi->rx_publish_prog = NULL;
-	}
-
-	if (bi->rx_complete_prog) {
-		bpf_prog_free(bi->rx_complete_prog);
-		bi->rx_complete_prog = NULL;
 	}
 
 	if (bi->rx_ctx) {
@@ -676,7 +649,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 
 	/* Of course we should not free the skb, but for now we know that
 	 * the txp program is a stub. */
-	ret = BPF_PROG_RUN(bi->tx_publish_prog, /*ctx=*/tx_ctx);
+	ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_PUBLISH], /*ctx=*/tx_ctx);
 	printk("txp(%u bytes) --> %d\n", skb->len, ret);
 	dev_kfree_skb_any(skb);
 
@@ -712,7 +685,8 @@ bpfhv_tx_clean(struct bpfhv_info *bi)
 	for (count = 0;; count++) {
 		int ret;
 
-		ret = BPF_PROG_RUN(bi->tx_complete_prog, /*ctx=*/bi->tx_ctx);
+		ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_COMPLETE],
+					/*ctx=*/bi->tx_ctx);
 		if (ret == 0) {
 			/* No more completed transmissions. */
 			break;
@@ -752,7 +726,8 @@ bpfhv_rx_refill(struct bpfhv_info *bi)
 		rx_ctx->num_bufs = i;
 		bi->rx_free_bufs -= i;
 
-		ret = BPF_PROG_RUN(bi->rx_publish_prog, /*ctx=*/bi->rx_ctx);
+		ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_RX_PUBLISH],
+					/*ctx=*/bi->rx_ctx);
 		printk("rxp(%u bufs) --> %d\n", i, ret);
 	}
 
@@ -770,7 +745,8 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 		struct sk_buff *skb;
 		int ret;
 
-		ret = BPF_PROG_RUN(bi->rx_complete_prog, /*ctx=*/rx_ctx);
+		ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_RX_COMPLETE],
+					/*ctx=*/rx_ctx);
 		if (ret == 0) {
 			/* No more received packets. */
 			break;
