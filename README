@@ -3,3 +3,9 @@ Some goals:
 	- Provider can evolve the medatata header (e.g., virtio-net)
 	  to balance between the needs of FreeBSD and Linux.
 	  (virtio-net is good for Linux, but not for FreeBSD).
+
+TODO:
+	- A command register to stop/start the device (or maybe
+	  part of the feature negotiation mechanism ?)
+	- Two more programs to reclaim pending buffers (only
+	  when the device is stopped).
