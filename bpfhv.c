@@ -636,6 +636,7 @@ bpfhv_programs_teardown(struct bpfhv_info *bi)
 			kfree(rxq->rx_ctx);
 			rxq->rx_ctx = NULL;
 		}
+		ctx_paddr_write(bi, i, NULL);
 	}
 
 	for (i = 0; i < bi->num_tx_queues; i++) {
@@ -645,6 +646,7 @@ bpfhv_programs_teardown(struct bpfhv_info *bi)
 			kfree(txq->tx_ctx);
 			txq->tx_ctx = NULL;
 		}
+		ctx_paddr_write(bi, bi->num_rx_queues + i, NULL);
 	}
 
 	return 0;
