@@ -190,12 +190,6 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	bi->num_rx_queues = num_rx_queues;
 	bi->num_tx_queues = num_tx_queues;
 
-	/* TODO move these in bpfhv_programs_setup(). */
-	bi->rx_bufs = ioread32(ioaddr + BPFHV_IO_NUM_RX_BUFS);
-	bi->tx_bufs = ioread32(ioaddr + BPFHV_IO_NUM_TX_BUFS);
-	bi->rx_ctx_size = ioread32(ioaddr + BPFHV_IO_RX_CTX_SIZE);
-	bi->tx_ctx_size = ioread32(ioaddr + BPFHV_IO_TX_CTX_SIZE);
-
 	bi->rxqs = (struct bpfhv_rxq *)(bi + 1);
 	bi->txqs = (struct bpfhv_txq *)(bi->rxqs + num_rx_queues);
 
@@ -473,6 +467,13 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 	/* Deallocate previous eBPF programs and the associated contexts. */
 	bpfhv_programs_teardown(bi);
 
+	/* Update context size and max number of buffers. */
+	bi->rx_bufs = ioread32(bi->ioaddr + BPFHV_IO_NUM_RX_BUFS);
+	bi->tx_bufs = ioread32(bi->ioaddr + BPFHV_IO_NUM_TX_BUFS);
+	bi->rx_ctx_size = ioread32(bi->ioaddr + BPFHV_IO_RX_CTX_SIZE);
+	bi->tx_ctx_size = ioread32(bi->ioaddr + BPFHV_IO_TX_CTX_SIZE);
+
+	/* Read the eBPF programs from the hypervisor. */
 	for (i = BPFHV_PROG_NONE + 1; i < BPFHV_PROG_MAX; i++) {
 		uint32_t *progp;
 		size_t prog_len;
@@ -505,7 +506,7 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 			goto out;
 		}
 
-		/* Allocate all the eBPF programs. */
+		/* Allocate an eBPF program for 'insns'. */
 		bi->progs[i] = bpfhv_prog_alloc(progname_from_idx(i),
 						insns, prog_len);
 		if (bi->progs[i] == NULL) {
@@ -514,7 +515,7 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 	}
 
 
-	/* Allocate the program context for transmit and receive operation. */
+	/* Allocate the program contexts for transmit and receive operation. */
 	for (i = 0; i < bi->num_rx_queues; i++) {
 		struct bpfhv_rxq *rxq = bi->rxqs + i;
 
