@@ -33,6 +33,7 @@ struct bpfhv_info {
 	struct pci_dev *pdev;
 	int bars;
 	u8* __iomem ioaddr;
+	u8* __iomem progmmio_addr;
 
 	struct net_device		*netdev;
 	struct napi_struct		napi;
@@ -102,6 +103,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	unsigned int num_rx_queues, num_tx_queues, queue_pairs;
 	struct net_device *netdev;
+	u8* __iomem progmmio_addr;
 	struct bpfhv_info *bi;
 	u8* __iomem ioaddr;
 	int bars;
@@ -140,6 +142,12 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_iomap;
 	}
 
+	progmmio_addr = pci_iomap(pdev, BPFHV_PROG_PCI_BAR, 0);
+	if (!progmmio_addr) {
+		ret = -EIO;
+		goto err_progmmio_map;
+	}
+
 	num_tx_queues = ioread32(ioaddr + BPFHV_IO_NUM_TX_QUEUES);
 	num_rx_queues = ioread32(ioaddr + BPFHV_IO_NUM_RX_QUEUES);
 	queue_pairs = min(num_tx_queues, num_rx_queues);
@@ -158,6 +166,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	bi->pdev = pdev;
 	bi->bars = bars;
 	bi->ioaddr = ioaddr;
+	bi->progmmio_addr = progmmio_addr;
 
 	bi->rx_bufs = ioread32(ioaddr + BPFHV_IO_NUM_RX_BUFS);
 	bi->tx_bufs = ioread32(ioaddr + BPFHV_IO_NUM_TX_BUFS);
@@ -212,6 +221,8 @@ err_reg:
 err_prog:
 	free_netdev(netdev);
 err_alloc_eth:
+	iounmap(progmmio_addr);
+err_progmmio_map:
 	iounmap(ioaddr);
 err_iomap:
 	pci_release_selected_regions(pdev, bars);
@@ -233,6 +244,7 @@ bpfhv_remove(struct pci_dev *pdev)
 	netif_napi_del(&bi->napi);
 	unregister_netdev(netdev);
 	bpfhv_programs_teardown(bi);
+	iounmap(bi->progmmio_addr);
 	iounmap(bi->ioaddr);
 	pci_release_selected_regions(pdev, bi->bars);
 	free_netdev(netdev);
@@ -371,7 +383,42 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		/* return R0 */
 		BPF_EXIT_INSN(),
 	};
+	struct bpf_insn *progs[BPFHV_PROG_MAX];
 	int ret;
+	int i;
+
+	for (i = BPFHV_PROG_NONE + 1; i < BPFHV_PROG_MAX; i++) {
+		uint32_t *progp;
+		size_t prog_len;
+		size_t j, jmax;
+
+		iowrite32(i, bi->ioaddr + BPFHV_IO_PROG_SELECT);
+		prog_len = ioread32(bi->ioaddr + BPFHV_IO_PROG_SIZE);
+		if (prog_len == 0 || prog_len > BPFHV_PROG_SIZE_MAX) {
+			printk("Invalid program length %u\n",
+				(unsigned int)prog_len);
+			return -1;
+		}
+		progs[i] = kzalloc(prog_len * sizeof(struct bpf_insn),
+					GFP_KERNEL);
+		if (progs[i] == NULL) {
+			printk("Failed to allocate memory for program #%d\n",
+				i);
+			return -ENOMEM;
+		}
+
+		jmax = (prog_len * sizeof(struct bpf_insn)) / sizeof(*progp);
+		progp = (uint32_t *)progs[i];
+		for (j = 0; j < jmax; j++, progp++) {
+			*progp = readl(bi->progmmio_addr +
+					j * sizeof(*progp));
+		}
+
+#ifdef PROGDUMP
+		bpfhv_prog_dump("progX", progs[i], prog_len);
+#endif
+		kfree(progs[i]);
+	}
 
 #ifdef PROGDUMP
 	bpfhv_prog_dump("txp", txp_insns, ARRAY_SIZE(txp_insns));
