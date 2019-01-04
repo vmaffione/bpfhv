@@ -376,10 +376,10 @@ ctx_paddr_write(struct bpfhv_info *bi, unsigned int qidx, void *vaddr)
 	phys_addr_t paddr = virt_to_phys(vaddr);
 
 	iowrite32(qidx, bi->ioaddr + BPFHV_IO_QUEUE_SELECT);
-	iowrite32((paddr >> 32) & 0xffffffff,
-			bi->ioaddr + BPFHV_IO_CTX_PADDR_HI);
 	iowrite32(paddr & 0xffffffff,
 			bi->ioaddr + BPFHV_IO_CTX_PADDR_LO);
+	iowrite32((paddr >> 32) & 0xffffffff,
+			bi->ioaddr + BPFHV_IO_CTX_PADDR_HI);
 }
 
 static int
