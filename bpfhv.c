@@ -28,6 +28,9 @@
 
 #include "bpfhv.h"
 
+struct bpfhv_rxq;
+struct bpfhv_txq;
+
 struct bpfhv_info {
 	/* PCI information. */
 	struct pci_dev *pdev;
@@ -36,31 +39,48 @@ struct bpfhv_info {
 	u8* __iomem progmmio_addr;
 
 	struct net_device		*netdev;
-	struct napi_struct		napi;
 
 	/* Transmit and receive programs (publish and completion). */
 	struct bpf_prog			*progs[BPFHV_PROG_MAX];
 
-	/* Context for the transmit programs. */
-	struct bpfhv_tx_context		*tx_ctx;
+	/* Transmit and receive queues. */
+	struct bpfhv_rxq		*rxqs;
+	struct bpfhv_txq		*txqs;
+	size_t				num_rx_queues;
+	size_t				num_tx_queues;
+	size_t				rx_ctx_size;
 	size_t				tx_ctx_size;
+
+	/* Maximum number of bufs available for receive operation. */
+	size_t				rx_bufs;
+
 	/* Maximum number of bufs available for transmission. */
 	size_t				tx_bufs;
-	/* Number of bufs currently available for the guest to transmit
-	 * more packets. */
-	size_t				tx_free_bufs;
+
+	/* Temporary timer for interrupt emulation. */
+	struct timer_list		intr_tmr;
+};
+
+struct bpfhv_rxq {
+	struct bpfhv_info		*bi;
 
 	/* Context for the receive programs. */
 	struct bpfhv_rx_context		*rx_ctx;
-	size_t				rx_ctx_size;
-	/* Maximum number of bufs available for receive operation. */
-	size_t				rx_bufs;
 	/* Number of bufs currently available for the guest to publish
 	 * more receive buffers. */
 	size_t				rx_free_bufs;
 
-	/* Temporary timer for interrupt emulation. */
-	struct timer_list		intr_tmr;
+	struct napi_struct		napi;
+};
+
+struct bpfhv_txq {
+	struct bpfhv_info		*bi;
+
+	/* Context for the transmit programs. */
+	struct bpfhv_tx_context		*tx_ctx;
+	/* Number of bufs currently available for the guest to transmit
+	 * more packets. */
+	size_t				tx_free_bufs;
 };
 
 static int		bpfhv_probe(struct pci_dev *pdev,
@@ -80,9 +100,9 @@ static int		bpfhv_open(struct net_device *netdev);
 static int		bpfhv_close(struct net_device *netdev);
 static netdev_tx_t	bpfhv_start_xmit(struct sk_buff *skb,
 					struct net_device *netdev);
-static void		bpfhv_tx_clean(struct bpfhv_info *bi);
+static void		bpfhv_tx_clean(struct bpfhv_txq *txq);
 static void		bpfhv_intr_tmr(struct timer_list *tmr);
-static int		bpfhv_rx_refill(struct bpfhv_info *bi);
+static int		bpfhv_rx_refill(struct bpfhv_rxq *rxq);
 static int		bpfhv_rx_poll(struct napi_struct *napi, int budget);
 static struct net_device_stats *bpfhv_get_stats(struct net_device *netdev);
 static int		bpfhv_change_mtu(struct net_device *netdev, int new_mtu);
@@ -105,6 +125,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	u8* __iomem ioaddr;
 	int bars;
 	int ret;
+	int i;
 
 	/* PCI initialization. */
 	bars = pci_select_bars(pdev, IORESOURCE_MEM | IORESOURCE_IO);
@@ -145,10 +166,12 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_progmmio_map;
 	}
 
-	num_tx_queues = ioread32(ioaddr + BPFHV_IO_NUM_TX_QUEUES);
 	num_rx_queues = ioread32(ioaddr + BPFHV_IO_NUM_RX_QUEUES);
+	num_tx_queues = ioread32(ioaddr + BPFHV_IO_NUM_TX_QUEUES);
 	queue_pairs = min(num_tx_queues, num_rx_queues);
-	netdev = alloc_etherdev_mq(sizeof(*bi), queue_pairs);
+	netdev = alloc_etherdev_mq(sizeof(*bi) +
+				num_rx_queues * sizeof(bi->rxqs[0]) +
+				num_tx_queues * sizeof(bi->txqs[0]), queue_pairs);
 	if (!netdev) {
 		printk("Failed to allocate net device\n");
 		ret = -ENOMEM;
@@ -164,11 +187,17 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	bi->bars = bars;
 	bi->ioaddr = ioaddr;
 	bi->progmmio_addr = progmmio_addr;
+	bi->num_rx_queues = num_rx_queues;
+	bi->num_tx_queues = num_tx_queues;
 
+	/* TODO move these in bpfhv_programs_setup(). */
 	bi->rx_bufs = ioread32(ioaddr + BPFHV_IO_NUM_RX_BUFS);
 	bi->tx_bufs = ioread32(ioaddr + BPFHV_IO_NUM_TX_BUFS);
 	bi->rx_ctx_size = ioread32(ioaddr + BPFHV_IO_RX_CTX_SIZE);
 	bi->tx_ctx_size = ioread32(ioaddr + BPFHV_IO_TX_CTX_SIZE);
+
+	bi->rxqs = (struct bpfhv_rxq *)(bi + 1);
+	bi->txqs = (struct bpfhv_txq *)(bi->rxqs + num_rx_queues);
 
 	/* Read MAC address from device registers and put it into the
 	 * netdev struct. */
@@ -200,9 +229,21 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_prog;
 	}
 
-	/* Register the network interface within the network stack. */
-	netif_napi_add(netdev, &bi->napi, bpfhv_rx_poll, NAPI_POLL_WEIGHT);
+	for (i = 0; i < num_rx_queues; i++) {
+		struct bpfhv_rxq *rxq = bi->rxqs + i;
 
+		netif_napi_add(netdev, &rxq->napi, bpfhv_rx_poll,
+				NAPI_POLL_WEIGHT);
+		rxq->bi = bi;
+	}
+
+	for (i = 0; i < num_tx_queues; i++) {
+		struct bpfhv_txq *txq = bi->txqs + i;
+
+		txq->bi = bi;
+	}
+
+	/* Register the network interface within the network stack. */
 	ret = register_netdev(netdev);
 	if (ret) {
 		goto err_reg;
@@ -236,9 +277,14 @@ bpfhv_remove(struct pci_dev *pdev)
 {
 	struct net_device *netdev = pci_get_drvdata(pdev);
 	struct bpfhv_info *bi = netdev_priv(netdev);
+	int i;
 
 	netif_carrier_off(netdev);
-	netif_napi_del(&bi->napi);
+	for (i = 0; i < bi->num_rx_queues; i++) {
+		struct bpfhv_rxq *rxq = bi->rxqs + i;
+
+		netif_napi_del(&rxq->napi);
+	}
 	unregister_netdev(netdev);
 	bpfhv_programs_teardown(bi);
 	iounmap(bi->progmmio_addr);
@@ -262,13 +308,13 @@ static const uint8_t udp_pkt[] = {
 	0x20, 0x70, 0x6b, 0x74, 0x2d, 0x67, 0x65, 0x6e, 0x20, 0x44, 0x49, 0x52,
 };
 
-#define BI_FROM_CTX(_ctx)\
-	((struct bpfhv_info *)((uintptr_t)((_ctx)->guest_priv)))
+#define RXQ_FROM_CTX(_ctx)\
+	((struct bpfhv_rxq *)((uintptr_t)((_ctx)->guest_priv)))
 
 BPF_CALL_1(bpf_hv_pkt_alloc, struct bpfhv_rx_context *, ctx)
 {
-	struct bpfhv_info *bi = BI_FROM_CTX(ctx);
-	struct sk_buff *skb = napi_alloc_skb(&bi->napi, sizeof(udp_pkt));
+	struct bpfhv_rxq *rxq = RXQ_FROM_CTX(ctx);
+	struct sk_buff *skb = napi_alloc_skb(&rxq->napi, sizeof(udp_pkt));
 
 	ctx->packet = (uintptr_t)skb;
 	if (unlikely(!skb)) {
@@ -457,20 +503,27 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 
 
 	/* Allocate the program context for transmit and receive operation. */
-	bi->tx_ctx = kzalloc(bi->tx_ctx_size, GFP_KERNEL);
-	if (bi->tx_ctx == NULL) {
-		goto out;
-	}
-	bi->tx_free_bufs = bi->tx_bufs;
+	for (i = 0; i < bi->num_rx_queues; i++) {
+		struct bpfhv_rxq *rxq = bi->rxqs + i;
 
-	bi->rx_ctx = kzalloc(bi->rx_ctx_size, GFP_KERNEL);
-	if (bi->rx_ctx == NULL) {
-		goto out;
+		rxq->rx_ctx = kzalloc(bi->rx_ctx_size, GFP_KERNEL);
+		if (rxq->rx_ctx == NULL) {
+			goto out;
+		}
+		rxq->rx_free_bufs = bi->rx_bufs;
+		rxq->rx_ctx->guest_priv = (uintptr_t)rxq;
 	}
-	bi->rx_free_bufs = bi->rx_bufs;
 
-	bi->tx_ctx->guest_priv = (uintptr_t)bi;
-	bi->rx_ctx->guest_priv = (uintptr_t)bi;
+	for (i = 0; i < bi->num_tx_queues; i++) {
+		struct bpfhv_txq *txq = bi->txqs + i;
+
+		txq->tx_ctx = kzalloc(bi->tx_ctx_size, GFP_KERNEL);
+		if (txq->tx_ctx == NULL) {
+			goto out;
+		}
+		txq->tx_free_bufs = bi->tx_bufs;
+		txq->tx_ctx->guest_priv = (uintptr_t)txq;
+	}
 
 	ret = 0;
 out:
@@ -561,14 +614,22 @@ bpfhv_programs_teardown(struct bpfhv_info *bi)
 		}
 	}
 
-	if (bi->tx_ctx) {
-		kfree(bi->tx_ctx);
-		bi->tx_ctx = NULL;
+	for (i = 0; i < bi->num_rx_queues; i++) {
+		struct bpfhv_rxq *rxq = bi->rxqs + i;
+
+		if (rxq->rx_ctx) {
+			kfree(rxq->rx_ctx);
+			rxq->rx_ctx = NULL;
+		}
 	}
 
-	if (bi->rx_ctx) {
-		kfree(bi->rx_ctx);
-		bi->rx_ctx = NULL;
+	for (i = 0; i < bi->num_tx_queues; i++) {
+		struct bpfhv_txq *txq = bi->txqs + i;
+
+		if (txq->tx_ctx) {
+			kfree(txq->tx_ctx);
+			txq->tx_ctx = NULL;
+		}
 	}
 
 	return 0;
@@ -578,9 +639,14 @@ static int
 bpfhv_open(struct net_device *netdev)
 {
 	struct bpfhv_info *bi = netdev_priv(netdev);
+	int i;
 
-	bpfhv_rx_refill(bi);
-	napi_enable(&bi->napi);
+	for (i = 0; i < bi->num_rx_queues; i++) {
+		struct bpfhv_rxq *rxq = bi->rxqs + i;
+
+		bpfhv_rx_refill(rxq);
+		napi_enable(&rxq->napi);
+	}
 	mod_timer(&bi->intr_tmr, jiffies + msecs_to_jiffies(300));
 
 	return 0;
@@ -590,9 +656,14 @@ static int
 bpfhv_close(struct net_device *netdev)
 {
 	struct bpfhv_info *bi = netdev_priv(netdev);
+	int i;
 
 	del_timer_sync(&bi->intr_tmr);
-	napi_disable(&bi->napi);
+	for (i = 0; i < bi->num_rx_queues; i++) {
+		struct bpfhv_rxq *rxq = bi->rxqs + i;
+
+		napi_disable(&rxq->napi);
+	}
 
 	return 0;
 }
@@ -601,7 +672,8 @@ static netdev_tx_t
 bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
 	struct bpfhv_info *bi = netdev_priv(netdev);
-	struct bpfhv_tx_context *tx_ctx = bi->tx_ctx;
+	struct bpfhv_txq *txq = bi->txqs + 0;
+	struct bpfhv_tx_context *tx_ctx = txq->tx_ctx;
 	unsigned int len = skb_headlen(skb);
 	unsigned int nr_frags;
 	unsigned int i;
@@ -614,7 +686,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		return NETDEV_TX_OK;
 	}
 
-	if (bi->tx_free_bufs < nr_frags + 1) {
+	if (txq->tx_free_bufs < nr_frags + 1) {
 		return NETDEV_TX_BUSY;
 	}
 
@@ -645,7 +717,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		tx_ctx->len[i] = len;
 	}
 	tx_ctx->num_bufs = i;
-	bi->tx_free_bufs -= i;
+	txq->tx_free_bufs -= i;
 
 	/* Of course we should not free the skb, but for now we know that
 	 * the txp program is a stub. */
@@ -664,7 +736,7 @@ bpfhv_intr_tmr(struct timer_list *tmr)
 	{
 		/* Trigger "reception" of a packet (see rxc_insns[]). */
 		uint8_t rand;
-		uint64_t *rxcntp = (uint64_t *)(&bi->rx_ctx[1]);
+		uint64_t *rxcntp = (uint64_t *)(&bi->rxqs[0].rx_ctx[1]);
 
 		get_random_bytes((void *)&rand, sizeof(rand));
 		if (rand < 30) {
@@ -672,21 +744,22 @@ bpfhv_intr_tmr(struct timer_list *tmr)
 		}
 	}
 
-	napi_schedule(&bi->napi);
-	bpfhv_tx_clean(bi);
+	napi_schedule(&bi->rxqs[0].napi);
+	bpfhv_tx_clean(&bi->txqs[0]);
 	mod_timer(&bi->intr_tmr, jiffies + msecs_to_jiffies(300));
 }
 
 static void
-bpfhv_tx_clean(struct bpfhv_info *bi)
+bpfhv_tx_clean(struct bpfhv_txq *txq)
 {
+	struct bpfhv_info *bi = txq->bi;
 	unsigned int count;
 
 	for (count = 0;; count++) {
 		int ret;
 
 		ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_COMPLETE],
-					/*ctx=*/bi->tx_ctx);
+					/*ctx=*/txq->tx_ctx);
 		if (ret == 0) {
 			/* No more completed transmissions. */
 			break;
@@ -699,19 +772,20 @@ bpfhv_tx_clean(struct bpfhv_info *bi)
 
 	if (count) {
 		printk("txc() --> %d packets\n", count);
-		bi->tx_free_bufs += count;
+		txq->tx_free_bufs += count;
 	}
 }
 
 static int
-bpfhv_rx_refill(struct bpfhv_info *bi)
+bpfhv_rx_refill(struct bpfhv_rxq *rxq)
 {
-	struct bpfhv_rx_context *rx_ctx = bi->rx_ctx;
+	struct bpfhv_rx_context *rx_ctx = rxq->rx_ctx;
+	struct bpfhv_info *bi = rxq->bi;
 	unsigned int i;
 	int ret;
 
-	while (bi->rx_free_bufs > 0) {
-		size_t n = bi->rx_free_bufs;
+	while (rxq->rx_free_bufs > 0) {
+		size_t n = rxq->rx_free_bufs;
 
 		if (n > BPFHV_MAX_RX_BUFS) {
 			n = BPFHV_MAX_RX_BUFS;
@@ -724,10 +798,10 @@ bpfhv_rx_refill(struct bpfhv_info *bi)
 			rx_ctx->len[i] = 70;
 		}
 		rx_ctx->num_bufs = i;
-		bi->rx_free_bufs -= i;
+		rxq->rx_free_bufs -= i;
 
 		ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_RX_PUBLISH],
-					/*ctx=*/bi->rx_ctx);
+					/*ctx=*/rxq->rx_ctx);
 		printk("rxp(%u bufs) --> %d\n", i, ret);
 	}
 
@@ -737,8 +811,9 @@ bpfhv_rx_refill(struct bpfhv_info *bi)
 static int
 bpfhv_rx_poll(struct napi_struct *napi, int budget)
 {
-	struct bpfhv_info *bi = container_of(napi, struct bpfhv_info, napi);
-	struct bpfhv_rx_context *rx_ctx = bi->rx_ctx;
+	struct bpfhv_rxq *rxq = container_of(napi, struct bpfhv_rxq, napi);
+	struct bpfhv_info *bi = rxq->bi;
+	struct bpfhv_rx_context *rx_ctx = rxq->rx_ctx;
 	int count;
 
 	for (count = 0; count < budget; count++) {
