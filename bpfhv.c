@@ -1013,6 +1013,10 @@ bpfhv_rx_refill(struct bpfhv_rxq *rxq)
 		printk("rxp(%u bufs) --> %d\n", i, ret);
 	}
 
+	/* We should check (oflags & BPFHV_OFLAGS_NOTIF_NEEDED) once
+	 * rxp gets real. */
+	writel(0, rxq->doorbell);
+
 	return 0;
 }
 
