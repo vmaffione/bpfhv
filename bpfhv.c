@@ -201,6 +201,12 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_progmmio_map;
 	}
 
+	/* Inform the hypervisor about the doorbell base GVA. */
+	iowrite32(((uint64_t)dbmmio_addr) & 0xffffffff,
+			ioaddr + BPFHV_IO_DOORBELL_GVA_LO);
+	iowrite32((((uint64_t)dbmmio_addr) >> 32ULL) & 0xffffffff,
+			ioaddr + BPFHV_IO_DOORBELL_GVA_HI);
+
 	num_rx_queues = ioread32(ioaddr + BPFHV_IO_NUM_RX_QUEUES);
 	num_tx_queues = ioread32(ioaddr + BPFHV_IO_NUM_TX_QUEUES);
 	queue_pairs = min(num_tx_queues, num_rx_queues);

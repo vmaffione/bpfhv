@@ -148,8 +148,8 @@ enum bpfhv_helper_id {
  */
 #define BPFHV_IO_QUEUE_SELECT		40
 
-/* A register where the guest can write the physical address of the receive or
- * transmit context for the selected queue. */
+/* A 64-bit register where the guest can write the physical address of the
+ * receive or transmit context for the selected queue. */
 #define BPFHV_IO_CTX_PADDR_LO		44
 #define BPFHV_IO_CTX_PADDR_HI		48
 
@@ -169,7 +169,16 @@ enum {
 #define BPFHV_IO_PROG_SIZE		56
 #define BPFHV_PROG_SIZE_MAX		16384
 
-/* Marker for the end of known registers, and size of the I/O region. */
-#define BPFHV_IO_END			60
+/* A 64-bit register where the guest can write the Guest Virtual Address
+ * of the doorbell region. This is needed by the hypervisor to relocate
+ * the eBPF instructions that send notifications to the hypervisor itself
+ * (since guest-->host notifications are triggered by memory writes into
+ * the doorbell region). The guest is required to provide the GVA before
+ * reading any eBPF program from the program mmio region. */
+#define BPFHV_IO_DOORBELL_GVA_LO	60
+#define BPFHV_IO_DOORBELL_GVA_HI	64
+
+/* Marker for the end of valid registers, and size of the I/O region. */
+#define BPFHV_IO_END			68
 #define BPFHV_IO_MASK			0xff
 
