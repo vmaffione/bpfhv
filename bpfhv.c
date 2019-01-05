@@ -761,6 +761,13 @@ bpfhv_resources_dealloc(struct bpfhv_info *bi)
 	}
 }
 
+#define TX_INFO_IDX_INC(_bi, _idx) \
+	do {\
+		if (unlikely(++(_idx) == (_bi)->tx_bufs)) {\
+			(_idx) = 0;\
+		}\
+	} while (0)
+
 static netdev_tx_t
 bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
@@ -805,9 +812,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	info->skb = skb;
 	info->eop = (nr_frags == 0);
 	info->mapped_page = 0;
-	if (unlikely(++ntu == bi->tx_bufs)) {
-		ntu = 0;
-	}
+	TX_INFO_IDX_INC(bi, ntu);
 
 	for (f = 0; f < nr_frags; f++, i++) {
 		struct skb_frag_struct *frag;
@@ -843,9 +848,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		info->skb = NULL;
 		info->eop = (f == nr_frags - 1);
 		info->mapped_page = 1;
-		if (unlikely(++ntu == bi->tx_bufs)) {
-			ntu = 0;
-		}
+		TX_INFO_IDX_INC(bi, ntu);
 	}
 	tx_ctx->num_bufs = i;
 	txq->tx_free_bufs -= i;
@@ -887,7 +890,7 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 
 	for (count = 0;; count++) {
 		struct bpfhv_tx_info *info;
-		unsigned int info_idx;
+		unsigned int ntc;
 		struct sk_buff *skb;
 		int ret;
 
@@ -902,11 +905,11 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 			break;
 		}
 
-		info_idx = (unsigned int)tx_ctx->cookie;
+		ntc = (unsigned int)tx_ctx->cookie;
 #if 1
-		info_idx = txq->info_ntc; /* TODO remove */
+		ntc = txq->info_ntc; /* TODO remove */
 #endif
-		info = txq->info + info_idx;
+		info = txq->info + ntc;
 		skb = info->skb;
 		for (;;) {
 			if (info->mapped_page) {
@@ -919,17 +922,13 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 			if (info->eop) {
 				break;
 			}
-			if (unlikely(++info_idx == bi->tx_bufs)) {
-				info_idx = 0;
-			}
-			info = txq->info + info_idx;
+			TX_INFO_IDX_INC(bi, ntc);
+			info = txq->info + ntc;
 		}
 #if 1
 		/* TODO remove */
-		if (unlikely(++info_idx == bi->tx_bufs)) {
-			info_idx = 0;
-		}
-		txq->info_ntc = info_idx;
+		TX_INFO_IDX_INC(bi, ntc);
+		txq->info_ntc = ntc;
 #endif
 		dev_kfree_skb_any(skb);
 	}
