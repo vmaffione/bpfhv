@@ -100,7 +100,7 @@ struct bpfhv_txq {
 	 * by implementing a free-list within the array. */
 	struct bpfhv_tx_info		*info;
 	unsigned int			info_ntu;
-	unsigned int			info_ntc; /* TODO temp */
+	unsigned int			info_ntc; /* TODO remove */
 };
 
 static int		bpfhv_probe(struct pci_dev *pdev,
@@ -789,27 +789,23 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	/* Prepare the input arguments for the txp program. */
 	tx_ctx->cookie = ntu;
 
-	if (unlikely(len == 0)) {
-		i = 0;
-	} else {
-		/* Linear part. */
-		dma = dma_map_single(&bi->pdev->dev, skb->data, len,
-					DMA_TO_DEVICE);
-		if (unlikely(dma_mapping_error(&bi->pdev->dev, dma))) {
-			dev_kfree_skb_any(skb);
-			return NETDEV_TX_OK;
-		}
-		tx_ctx->phys[0] = dma;
-		tx_ctx->len[0] = len;
-		i = 1;
-		txq->info[ntu].dma = dma;
-		txq->info[ntu].len = len;
-		txq->info[ntu].skb = skb;
-		txq->info[ntu].eop = (nr_frags == 0);
-		txq->info[ntu].mapped_page = 0;
-		if (unlikely(++ntu == bi->tx_bufs)) {
-			ntu = 0;
-		}
+	/* Linear part. */
+	dma = dma_map_single(&bi->pdev->dev, skb->data, len,
+				DMA_TO_DEVICE);
+	if (unlikely(dma_mapping_error(&bi->pdev->dev, dma))) {
+		dev_kfree_skb_any(skb);
+		return NETDEV_TX_OK;
+	}
+	tx_ctx->phys[0] = dma;
+	tx_ctx->len[0] = len;
+	i = 1;
+	txq->info[ntu].dma = dma;
+	txq->info[ntu].len = len;
+	txq->info[ntu].skb = skb;
+	txq->info[ntu].eop = (nr_frags == 0);
+	txq->info[ntu].mapped_page = 0;
+	if (unlikely(++ntu == bi->tx_bufs)) {
+		ntu = 0;
 	}
 
 	for (f = 0; f < nr_frags; f++, i++) {
@@ -817,10 +813,6 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 
 		frag = &skb_shinfo(skb)->frags[f];
 		len = frag->size;
-
-		if (unlikely(len == 0)) { // TODO remove ?
-			continue;
-		}
 
 		dma = dma_map_page(&bi->pdev->dev, skb_frag_page(frag),
 				frag->page_offset, len, DMA_TO_DEVICE);
