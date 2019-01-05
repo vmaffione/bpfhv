@@ -799,11 +799,12 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	tx_ctx->phys[0] = dma;
 	tx_ctx->len[0] = len;
 	i = 1;
-	txq->info[ntu].dma = dma;
-	txq->info[ntu].len = len;
-	txq->info[ntu].skb = skb;
-	txq->info[ntu].eop = (nr_frags == 0);
-	txq->info[ntu].mapped_page = 0;
+	info = txq->info + ntu;
+	info->dma = dma;
+	info->len = len;
+	info->skb = skb;
+	info->eop = (nr_frags == 0);
+	info->mapped_page = 0;
 	if (unlikely(++ntu == bi->tx_bufs)) {
 		ntu = 0;
 	}
@@ -836,11 +837,12 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		}
 		tx_ctx->phys[i] = dma;
 		tx_ctx->len[i] = len;
-		txq->info[ntu].dma = dma;
-		txq->info[ntu].len = len;
-		txq->info[ntu].skb = NULL;
-		txq->info[ntu].eop = (f == nr_frags - 1);
-		txq->info[ntu].mapped_page = 1;
+		info = txq->info + ntu;
+		info->dma = dma;
+		info->len = len;
+		info->skb = NULL;
+		info->eop = (f == nr_frags - 1);
+		info->mapped_page = 1;
 		if (unlikely(++ntu == bi->tx_bufs)) {
 			ntu = 0;
 		}
