@@ -504,7 +504,7 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		BPF_STX_MEM(BPF_DW, BPF_REG_6, BPF_REG_2,
 				sizeof(struct bpfhv_rx_context)),
 		/* call bpf_hv_pkt_alloc(R1 = ctx) --> R0 */
-		BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0, BPFHV_pkt_alloc),
+		BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0, BPFHV_FUNC_pkt_alloc),
 		/* if R0 < 0 goto PC + 1 */
 		BPF_JMP_IMM(BPF_JSLT, BPF_REG_0, 0, 1),
 		/* R0 = 1 */
@@ -628,7 +628,7 @@ bpfhv_helper_calls_fixup(struct bpfhv_info *bi, struct bpf_insn *insns,
 		}
 
 		switch (insns->imm) {
-		case BPFHV_pkt_alloc:
+		case BPFHV_FUNC_pkt_alloc:
 			func = bpf_hv_pkt_alloc;
 			break;
 		default:

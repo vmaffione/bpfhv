@@ -1,3 +1,5 @@
+#ifndef __BPFHV_H__
+#define __BPFHV_H__
 /*
  *    Shared definitions for the eBPF paravirtual device.
  *    2018 Vincenzo Maffione <v.maffione@gmail.it>
@@ -95,9 +97,19 @@ struct bpfhv_rx_context {
 /* Numbers for the helper calls used by bpfhv programs. */
 #define BPFHV_HELPER_MAGIC	0x4b8f0000
 enum bpfhv_helper_id {
-	BPFHV_pkt_alloc = BPFHV_HELPER_MAGIC,
+	BPFHV_FUNC_pkt_alloc = BPFHV_HELPER_MAGIC,
 };
 
+#ifndef BPFHV_FUNC
+#define BPFHV_FUNC(NAME, ...)              \
+   (*NAME)(__VA_ARGS__) = (void *)BPFHV_FUNC_##NAME
+#endif
+
+/* Example of helper call definition, to be used in the C code to be compiled
+ * into eBPF. */
+#if 0
+static void *BPFHV_FUNC(pkt_alloc, struct bpfhv_rx_context *ctx);
+#endif
 
 /*
  * PCI device definitions, including PCI identifiers,
@@ -191,3 +203,4 @@ enum {
 #define BPFHV_IO_END			68
 #define BPFHV_IO_MASK			0xff
 
+#endif  /* __BPFHV_H__ */
