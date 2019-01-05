@@ -37,6 +37,7 @@ struct bpfhv_info {
 	struct device *dev;	/* cache &pdev->dev */
 	int bars;
 	u8* __iomem ioaddr;
+	u8* __iomem dbmmio_addr;
 	u8* __iomem progmmio_addr;
 
 	struct net_device		*netdev;
@@ -144,6 +145,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	unsigned int num_rx_queues, num_tx_queues, queue_pairs;
 	struct net_device *netdev;
 	u8* __iomem progmmio_addr;
+	u8* __iomem dbmmio_addr;
 	struct bpfhv_info *bi;
 	u8* __iomem ioaddr;
 	int bars;
@@ -172,6 +174,10 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		pci_resource_start(pdev, BPFHV_IO_PCI_BAR),
 		pci_resource_len(pdev, BPFHV_IO_PCI_BAR),
 		pci_resource_flags(pdev, BPFHV_IO_PCI_BAR));
+	printk("DOORBELL MMIO BAR: start 0x%llx, len %llu, flags 0x%lx\n",
+		pci_resource_start(pdev, BPFHV_DOORBELL_PCI_BAR),
+		pci_resource_len(pdev, BPFHV_DOORBELL_PCI_BAR),
+		pci_resource_flags(pdev, BPFHV_DOORBELL_PCI_BAR));
 	printk("PROG MMIO BAR: start 0x%llx, len %llu, flags 0x%lx\n",
 		pci_resource_start(pdev, BPFHV_PROG_PCI_BAR),
 		pci_resource_len(pdev, BPFHV_PROG_PCI_BAR),
@@ -181,6 +187,12 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (!ioaddr) {
 		ret = -EIO;
 		goto err_iomap;
+	}
+
+	dbmmio_addr = pci_iomap(pdev, BPFHV_DOORBELL_PCI_BAR, 0);
+	if (!dbmmio_addr) {
+		ret = -EIO;
+		goto err_dbmmio_map;
 	}
 
 	progmmio_addr = pci_iomap(pdev, BPFHV_PROG_PCI_BAR, 0);
@@ -210,6 +222,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	bi->dev = &pdev->dev;
 	bi->bars = bars;
 	bi->ioaddr = ioaddr;
+	bi->dbmmio_addr = dbmmio_addr;
 	bi->progmmio_addr = progmmio_addr;
 	bi->num_rx_queues = num_rx_queues;
 	bi->num_tx_queues = num_tx_queues;
@@ -279,6 +292,8 @@ err_prog:
 err_alloc_eth:
 	iounmap(progmmio_addr);
 err_progmmio_map:
+	iounmap(dbmmio_addr);
+err_dbmmio_map:
 	iounmap(ioaddr);
 err_iomap:
 	pci_release_selected_regions(pdev, bars);
@@ -306,6 +321,7 @@ bpfhv_remove(struct pci_dev *pdev)
 	unregister_netdev(netdev);
 	bpfhv_programs_teardown(bi);
 	iounmap(bi->progmmio_addr);
+	iounmap(bi->dbmmio_addr);
 	iounmap(bi->ioaddr);
 	pci_release_selected_regions(pdev, bi->bars);
 	free_netdev(netdev);
