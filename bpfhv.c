@@ -895,6 +895,12 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_PUBLISH], /*ctx=*/tx_ctx);
 	printk("txp(%u bytes) --> %d\n", skb->len, ret);
 
+	/* We should check tx_ctx->oflags & BPFHV_OFLAGS_NOTIF_NEEDED, once
+	 * the txp program gets real. */
+	if (!skb->xmit_more) {
+		writel(0, txq->doorbell);
+	}
+
 	return NETDEV_TX_OK;
 }
 

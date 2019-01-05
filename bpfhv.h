@@ -50,8 +50,8 @@ struct bpfhv_tx_context {
 	uint32_t	len[BPFHV_MAX_TX_BUFS];
 	uint32_t	num_bufs;
 	uint32_t	oflags;
-#define BPFHV_FLAGS_NOTIF_NEEDED	(1 << 0)
-#define BPFHV_FLAGS_RESCHED_NEEDED	(1 << 1)
+#define BPFHV_OFLAGS_NOTIF_NEEDED	(1 << 0)
+#define BPFHV_OFLAGS_RESCHED_NEEDED	(1 << 1)
 	uint32_t	pad[14];
 
 	/* Private hv-side context follows here. */
