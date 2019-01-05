@@ -34,6 +34,7 @@ struct bpfhv_txq;
 struct bpfhv_info {
 	/* PCI information. */
 	struct pci_dev *pdev;
+	struct device *dev;	/* cache &pdev->dev */
 	int bars;
 	u8* __iomem ioaddr;
 	u8* __iomem progmmio_addr;
@@ -206,6 +207,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	bi = netdev_priv(netdev);
 	bi->netdev = netdev;
 	bi->pdev = pdev;
+	bi->dev = &pdev->dev;
 	bi->bars = bars;
 	bi->ioaddr = ioaddr;
 	bi->progmmio_addr = progmmio_addr;
@@ -776,6 +778,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	struct bpfhv_tx_context *tx_ctx = txq->tx_ctx;
 	unsigned int len = skb_headlen(skb);
 	unsigned int ntu = txq->info_ntu;
+	struct device *dev = bi->dev;
 	struct bpfhv_tx_info *info;
 	unsigned int nr_frags;
 	unsigned int i;
@@ -797,9 +800,8 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	tx_ctx->cookie = ntu;
 
 	/* Linear part. */
-	dma = dma_map_single(&bi->pdev->dev, skb->data, len,
-				DMA_TO_DEVICE);
-	if (unlikely(dma_mapping_error(&bi->pdev->dev, dma))) {
+	dma = dma_map_single(dev, skb->data, len, DMA_TO_DEVICE);
+	if (unlikely(dma_mapping_error(dev, dma))) {
 		dev_kfree_skb_any(skb);
 		return NETDEV_TX_OK;
 	}
@@ -820,9 +822,9 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		frag = &skb_shinfo(skb)->frags[f];
 		len = frag->size;
 
-		dma = dma_map_page(&bi->pdev->dev, skb_frag_page(frag),
+		dma = dma_map_page(dev, skb_frag_page(frag),
 				frag->page_offset, len, DMA_TO_DEVICE);
-		if (unlikely(dma_mapping_error(&bi->pdev->dev, dma))) {
+		if (unlikely(dma_mapping_error(dev, dma))) {
 			for (i--; i >= 0; i--) {
 				if (ntu == 0) {
 					ntu = bi->tx_bufs;
@@ -830,10 +832,10 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 				ntu--;
 				info = txq->info + ntu;
 				if (info->mapped_page) {
-					dma_unmap_page(&bi->pdev->dev, info->dma,
+					dma_unmap_page(dev, info->dma,
 							info->len, DMA_TO_DEVICE);
 				} else {
-					dma_unmap_single(&bi->pdev->dev, info->dma,
+					dma_unmap_single(dev, info->dma,
 							info->len, DMA_TO_DEVICE);
 				}
 			}
@@ -886,6 +888,7 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 {
 	struct bpfhv_tx_context *tx_ctx = txq->tx_ctx;
 	struct bpfhv_info *bi = txq->bi;
+	struct device *dev = bi->dev;
 	unsigned int count;
 
 	for (count = 0;; count++) {
@@ -913,10 +916,10 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 		skb = info->skb;
 		for (;;) {
 			if (info->mapped_page) {
-				dma_unmap_page(&bi->pdev->dev, info->dma,
+				dma_unmap_page(dev, info->dma,
 						info->len, DMA_TO_DEVICE);
 			} else {
-				dma_unmap_single(&bi->pdev->dev, info->dma,
+				dma_unmap_single(dev, info->dma,
 						info->len, DMA_TO_DEVICE);
 			}
 			if (info->eop) {
