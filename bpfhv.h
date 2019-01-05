@@ -39,8 +39,9 @@ struct bpfhv_tx_context {
 	 * or mbuf) can be stored in 'cookie'.
 	 *
 	 * On publication, 'phys', 'len', 'cookie' and 'num_bufs'
-	 * are input argument for the eBPF program.
-	 * On completion, 'cookie' is an output argument, while
+	 * are input argument for the eBPF program, and 'oflags' is
+	 * an output argument.
+	 * On completion, 'cookie' and 'oflags' are output arguments, while
 	 * all the other fields are invalid.
 	 */
 	uint64_t	cookie;
@@ -48,7 +49,10 @@ struct bpfhv_tx_context {
 	uint64_t	phys[BPFHV_MAX_TX_BUFS];
 	uint32_t	len[BPFHV_MAX_TX_BUFS];
 	uint32_t	num_bufs;
-	uint32_t	pad[15];
+	uint32_t	oflags;
+#define BPFHV_FLAGS_NOTIF_NEEDED	(1 << 0)
+#define BPFHV_FLAGS_RESCHED_NEEDED	(1 << 1)
+	uint32_t	pad[14];
 
 	/* Private hv-side context follows here. */
 	char		opaque[0];
@@ -67,11 +71,12 @@ struct bpfhv_rx_context {
 	 * A reference to the OS packet can be stored in 'packet'.
 	 *
 	 * On publication, 'phys', 'len', 'buf_cookie' and 'num_bufs'
-	 * are input arguments for the eBPF program, and the 'packet'
-	 * field is invalid.
-	 * On receiving, 'packet' is an output argument, and it contains
-	 * a pointer to a guest OS packet. The OS packet allocated by the
-	 * receive eBPF program by means of a helper call.
+	 * are input arguments for the eBPF program, the 'packet'
+	 * field is invalid, and 'oflags' is an output argument.
+	 * On receiving, 'packet' and 'oflags' are output arguments, with
+	 * 'packet' containing a pointer to a guest OS packet.
+	 * The OS packet allocated by the receive eBPF program by means of
+	 * a helper call.
 	 * All the other fields are invalid.
 	 */
 	uint64_t	packet;
@@ -80,7 +85,8 @@ struct bpfhv_rx_context {
 	uint64_t	phys[BPFHV_MAX_RX_BUFS];
 	uint32_t	len[BPFHV_MAX_RX_BUFS];
 	uint32_t	num_bufs;
-	uint32_t	pad[15];
+	uint32_t	oflags;
+	uint32_t	pad[14];
 
 	/* Private hv-side context follows here. */
 	char		opaque[0];
@@ -174,7 +180,10 @@ enum {
  * the eBPF instructions that send notifications to the hypervisor itself
  * (since guest-->host notifications are triggered by memory writes into
  * the doorbell region). The guest is required to provide the GVA before
- * reading any eBPF program from the program mmio region. */
+ * reading any eBPF program from the program mmio region. Note, however,
+ * that notifications can also be performed directly by the guest native
+ * code, and therefore the hypervisor is not required to implement a
+ * relocation mechanism.  */
 #define BPFHV_IO_DOORBELL_GVA_LO	60
 #define BPFHV_IO_DOORBELL_GVA_HI	64
 

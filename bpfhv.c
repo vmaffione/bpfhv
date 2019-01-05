@@ -33,12 +33,12 @@ struct bpfhv_txq;
 
 struct bpfhv_info {
 	/* PCI information. */
-	struct pci_dev *pdev;
-	struct device *dev;	/* cache &pdev->dev */
-	int bars;
-	u8* __iomem ioaddr;
-	u8* __iomem dbmmio_addr;
-	u8* __iomem progmmio_addr;
+	struct pci_dev			*pdev;
+	struct device			*dev;	/* cache &pdev->dev */
+	int				bars;
+	u8* __iomem			ioaddr;
+	u8* __iomem			dbmmio_addr;
+	u8* __iomem			progmmio_addr;
 
 	struct net_device		*netdev;
 
@@ -72,6 +72,10 @@ struct bpfhv_rxq {
 	 * more receive buffers. */
 	size_t				rx_free_bufs;
 
+	/* Address of the doorbell to be used for guest-->hv notifications
+	 * on this queue. */
+	u32* __iomem			doorbell;
+
 	struct napi_struct		napi;
 
 };
@@ -93,6 +97,10 @@ struct bpfhv_txq {
 	/* Number of bufs currently available for the guest to transmit
 	 * more packets. */
 	size_t				tx_free_bufs;
+
+	/* Address of the doorbell to be used for guest-->hv notifications
+	 * on this queue. */
+	u32* __iomem			doorbell;
 
 	/* Array to associate data to each published (but incomplete)
 	 * buffer. The 'info_ntu' field (next to use) is an index in
@@ -147,6 +155,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	u8* __iomem progmmio_addr;
 	u8* __iomem dbmmio_addr;
 	struct bpfhv_info *bi;
+	size_t doorbell_size;
 	u8* __iomem ioaddr;
 	int bars;
 	int ret;
@@ -206,6 +215,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 			ioaddr + BPFHV_IO_DOORBELL_GVA_LO);
 	iowrite32((((uint64_t)dbmmio_addr) >> 32ULL) & 0xffffffff,
 			ioaddr + BPFHV_IO_DOORBELL_GVA_HI);
+	doorbell_size = ioread32(ioaddr + BPFHV_IO_DOORBELL_SIZE);
 
 	num_rx_queues = ioread32(ioaddr + BPFHV_IO_NUM_RX_QUEUES);
 	num_tx_queues = ioread32(ioaddr + BPFHV_IO_NUM_TX_QUEUES);
@@ -272,12 +282,16 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		netif_napi_add(netdev, &rxq->napi, bpfhv_rx_poll,
 				NAPI_POLL_WEIGHT);
 		rxq->bi = bi;
+		rxq->doorbell = (u32* __iomem)(dbmmio_addr +
+						doorbell_size * i);
 	}
 
 	for (i = 0; i < num_tx_queues; i++) {
 		struct bpfhv_txq *txq = bi->txqs + i;
 
 		txq->bi = bi;
+		txq->doorbell = (u32* __iomem)(dbmmio_addr +
+					doorbell_size * (num_rx_queues + i));
 	}
 
 	/* Register the network interface within the network stack. */
