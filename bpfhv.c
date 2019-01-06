@@ -731,6 +731,10 @@ bpfhv_open(struct net_device *netdev)
 		napi_enable(&rxq->napi);
 	}
 
+	/* Enable transmit and receive in the hardware. */
+	iowrite32(BPFHV_CTRL_RX_ENABLE | BPFHV_CTRL_TX_ENABLE,
+			bi->ioaddr + BPFHV_IO_CTRL);
+
 	mod_timer(&bi->intr_tmr, jiffies + msecs_to_jiffies(300));
 
 	return 0;
@@ -771,6 +775,9 @@ bpfhv_close(struct net_device *netdev)
 {
 	struct bpfhv_info *bi = netdev_priv(netdev);
 	int i;
+
+	/* Disable transmit and receive in the hardware. */
+	iowrite32(0, bi->ioaddr + BPFHV_IO_CTRL);
 
 	del_timer_sync(&bi->intr_tmr);
 	for (i = 0; i < bi->num_rx_queues; i++) {
