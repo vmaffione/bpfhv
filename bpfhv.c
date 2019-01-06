@@ -68,6 +68,7 @@ struct bpfhv_rxq {
 
 	/* Context for the receive programs. */
 	struct bpfhv_rx_context		*rx_ctx;
+	dma_addr_t			ctx_dma;
 	/* Number of bufs currently available for the guest to publish
 	 * more receive buffers. */
 	size_t				rx_free_bufs;
@@ -94,6 +95,7 @@ struct bpfhv_txq {
 
 	/* Context for the transmit programs. */
 	struct bpfhv_tx_context		*tx_ctx;
+	dma_addr_t			ctx_dma;
 	/* Number of bufs currently available for the guest to transmit
 	 * more packets. */
 	size_t				tx_free_bufs;
@@ -431,10 +433,8 @@ progname_from_idx(unsigned int prog_idx)
 }
 
 static void
-ctx_paddr_write(struct bpfhv_info *bi, unsigned int qidx, void *vaddr)
+ctx_paddr_write(struct bpfhv_info *bi, unsigned int qidx, phys_addr_t paddr)
 {
-	phys_addr_t paddr = vaddr ? virt_to_phys(vaddr) : (phys_addr_t)0;
-
 	iowrite32(qidx, bi->ioaddr + BPFHV_IO_QUEUE_SELECT);
 	iowrite32(paddr & 0xffffffff,
 			bi->ioaddr + BPFHV_IO_CTX_PADDR_LO);
@@ -579,25 +579,29 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 	for (i = 0; i < bi->num_rx_queues; i++) {
 		struct bpfhv_rxq *rxq = bi->rxqs + i;
 
-		rxq->rx_ctx = kzalloc(bi->rx_ctx_size, GFP_KERNEL);
+		rxq->rx_ctx = dma_alloc_coherent(bi->dev, bi->rx_ctx_size,
+						&rxq->ctx_dma, GFP_KERNEL);
 		if (rxq->rx_ctx == NULL) {
 			goto out;
 		}
+		memset(rxq->rx_ctx, 0, bi->rx_ctx_size);
 		rxq->rx_free_bufs = bi->rx_bufs;
 		rxq->rx_ctx->guest_priv = (uintptr_t)rxq;
-		ctx_paddr_write(bi, i, rxq->rx_ctx);
+		ctx_paddr_write(bi, i, rxq->ctx_dma);
 	}
 
 	for (i = 0; i < bi->num_tx_queues; i++) {
 		struct bpfhv_txq *txq = bi->txqs + i;
 
-		txq->tx_ctx = kzalloc(bi->tx_ctx_size, GFP_KERNEL);
+		txq->tx_ctx = dma_alloc_coherent(bi->dev, bi->tx_ctx_size,
+						&txq->ctx_dma, GFP_KERNEL);
 		if (txq->tx_ctx == NULL) {
 			goto out;
 		}
+		memset(txq->tx_ctx, 0, bi->tx_ctx_size);
 		txq->tx_free_bufs = bi->tx_bufs;
 		txq->tx_ctx->guest_priv = (uintptr_t)txq;
-		ctx_paddr_write(bi, bi->num_rx_queues + i, txq->tx_ctx);
+		ctx_paddr_write(bi, bi->num_rx_queues + i, txq->ctx_dma);
 	}
 
 	ret = 0;
@@ -693,20 +697,22 @@ bpfhv_programs_teardown(struct bpfhv_info *bi)
 		struct bpfhv_rxq *rxq = bi->rxqs + i;
 
 		if (rxq->rx_ctx) {
-			kfree(rxq->rx_ctx);
+			dma_free_coherent(bi->dev, bi->rx_ctx_size,
+					rxq->rx_ctx, rxq->ctx_dma);
 			rxq->rx_ctx = NULL;
 		}
-		ctx_paddr_write(bi, i, NULL);
+		ctx_paddr_write(bi, i, 0);
 	}
 
 	for (i = 0; i < bi->num_tx_queues; i++) {
 		struct bpfhv_txq *txq = bi->txqs + i;
 
 		if (txq->tx_ctx) {
-			kfree(txq->tx_ctx);
+			dma_free_coherent(bi->dev, bi->tx_ctx_size,
+					txq->tx_ctx, txq->ctx_dma);
 			txq->tx_ctx = NULL;
 		}
-		ctx_paddr_write(bi, bi->num_rx_queues + i, NULL);
+		ctx_paddr_write(bi, bi->num_rx_queues + i, 0);
 	}
 
 	return 0;
