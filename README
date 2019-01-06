@@ -7,4 +7,3 @@ Some goals:
 TODO:
 	- Two more programs to reclaim pending buffers (only
 	  when the device is stopped).
-        - Allocate context as DMA coherent memory.

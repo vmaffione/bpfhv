@@ -67,7 +67,7 @@ struct bpfhv_rxq {
 	struct bpfhv_info		*bi;
 
 	/* Context for the receive programs. */
-	struct bpfhv_rx_context		*rx_ctx;
+	struct bpfhv_rx_context		*ctx;
 	dma_addr_t			ctx_dma;
 	/* Number of bufs currently available for the guest to publish
 	 * more receive buffers. */
@@ -94,7 +94,7 @@ struct bpfhv_txq {
 	struct bpfhv_info		*bi;
 
 	/* Context for the transmit programs. */
-	struct bpfhv_tx_context		*tx_ctx;
+	struct bpfhv_tx_context		*ctx;
 	dma_addr_t			ctx_dma;
 	/* Number of bufs currently available for the guest to transmit
 	 * more packets. */
@@ -579,28 +579,28 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 	for (i = 0; i < bi->num_rx_queues; i++) {
 		struct bpfhv_rxq *rxq = bi->rxqs + i;
 
-		rxq->rx_ctx = dma_alloc_coherent(bi->dev, bi->rx_ctx_size,
+		rxq->ctx = dma_alloc_coherent(bi->dev, bi->rx_ctx_size,
 						&rxq->ctx_dma, GFP_KERNEL);
-		if (rxq->rx_ctx == NULL) {
+		if (rxq->ctx == NULL) {
 			goto out;
 		}
-		memset(rxq->rx_ctx, 0, bi->rx_ctx_size);
+		memset(rxq->ctx, 0, bi->rx_ctx_size);
 		rxq->rx_free_bufs = bi->rx_bufs;
-		rxq->rx_ctx->guest_priv = (uintptr_t)rxq;
+		rxq->ctx->guest_priv = (uintptr_t)rxq;
 		ctx_paddr_write(bi, i, rxq->ctx_dma);
 	}
 
 	for (i = 0; i < bi->num_tx_queues; i++) {
 		struct bpfhv_txq *txq = bi->txqs + i;
 
-		txq->tx_ctx = dma_alloc_coherent(bi->dev, bi->tx_ctx_size,
+		txq->ctx = dma_alloc_coherent(bi->dev, bi->tx_ctx_size,
 						&txq->ctx_dma, GFP_KERNEL);
-		if (txq->tx_ctx == NULL) {
+		if (txq->ctx == NULL) {
 			goto out;
 		}
-		memset(txq->tx_ctx, 0, bi->tx_ctx_size);
+		memset(txq->ctx, 0, bi->tx_ctx_size);
 		txq->tx_free_bufs = bi->tx_bufs;
-		txq->tx_ctx->guest_priv = (uintptr_t)txq;
+		txq->ctx->guest_priv = (uintptr_t)txq;
 		ctx_paddr_write(bi, bi->num_rx_queues + i, txq->ctx_dma);
 	}
 
@@ -696,10 +696,10 @@ bpfhv_programs_teardown(struct bpfhv_info *bi)
 	for (i = 0; i < bi->num_rx_queues; i++) {
 		struct bpfhv_rxq *rxq = bi->rxqs + i;
 
-		if (rxq->rx_ctx) {
+		if (rxq->ctx) {
 			dma_free_coherent(bi->dev, bi->rx_ctx_size,
-					rxq->rx_ctx, rxq->ctx_dma);
-			rxq->rx_ctx = NULL;
+					rxq->ctx, rxq->ctx_dma);
+			rxq->ctx = NULL;
 		}
 		ctx_paddr_write(bi, i, 0);
 	}
@@ -707,10 +707,10 @@ bpfhv_programs_teardown(struct bpfhv_info *bi)
 	for (i = 0; i < bi->num_tx_queues; i++) {
 		struct bpfhv_txq *txq = bi->txqs + i;
 
-		if (txq->tx_ctx) {
+		if (txq->ctx) {
 			dma_free_coherent(bi->dev, bi->tx_ctx_size,
-					txq->tx_ctx, txq->ctx_dma);
-			txq->tx_ctx = NULL;
+					txq->ctx, txq->ctx_dma);
+			txq->ctx = NULL;
 		}
 		ctx_paddr_write(bi, bi->num_rx_queues + i, 0);
 	}
@@ -824,7 +824,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
 	struct bpfhv_info *bi = netdev_priv(netdev);
 	struct bpfhv_txq *txq = bi->txqs + 0;
-	struct bpfhv_tx_context *tx_ctx = txq->tx_ctx;
+	struct bpfhv_tx_context *ctx = txq->ctx;
 	unsigned int len = skb_headlen(skb);
 	unsigned int ntu = txq->info_ntu;
 	struct device *dev = bi->dev;
@@ -846,7 +846,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	}
 
 	/* Prepare the input arguments for the txp program. */
-	tx_ctx->cookie = ntu;
+	ctx->cookie = ntu;
 
 	/* Linear part. */
 	dma = dma_map_single(dev, skb->data, len, DMA_TO_DEVICE);
@@ -854,8 +854,8 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		dev_kfree_skb_any(skb);
 		return NETDEV_TX_OK;
 	}
-	tx_ctx->phys[0] = dma;
-	tx_ctx->len[0] = len;
+	ctx->phys[0] = dma;
+	ctx->len[0] = len;
 	i = 1;
 	info = txq->info + ntu;
 	info->dma = dma;
@@ -891,8 +891,8 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 			dev_kfree_skb_any(skb);
 			return NETDEV_TX_OK;
 		}
-		tx_ctx->phys[i] = dma;
-		tx_ctx->len[i] = len;
+		ctx->phys[i] = dma;
+		ctx->len[i] = len;
 		info = txq->info + ntu;
 		info->dma = dma;
 		info->len = len;
@@ -901,14 +901,14 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		info->mapped_page = 1;
 		TX_INFO_IDX_INC(bi, ntu);
 	}
-	tx_ctx->num_bufs = i;
+	ctx->num_bufs = i;
 	txq->tx_free_bufs -= i;
 	txq->info_ntu = ntu;
 
-	ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_PUBLISH], /*ctx=*/tx_ctx);
+	ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_PUBLISH], /*ctx=*/ctx);
 	printk("txp(%u bytes) --> %d\n", skb->len, ret);
 
-	/* We should check tx_ctx->oflags & BPFHV_OFLAGS_NOTIF_NEEDED, once
+	/* We should check ctx->oflags & BPFHV_OFLAGS_NOTIF_NEEDED, once
 	 * the txp program gets real. */
 	if (!skb->xmit_more) {
 		writel(0, txq->doorbell);
@@ -925,7 +925,7 @@ bpfhv_intr_tmr(struct timer_list *tmr)
 	{
 		/* Trigger "reception" of a packet (see rxc_insns[]). */
 		uint8_t rand;
-		uint64_t *rxcntp = (uint64_t *)(&bi->rxqs[0].rx_ctx[1]);
+		uint64_t *rxcntp = (uint64_t *)(&bi->rxqs[0].ctx[1]);
 
 		get_random_bytes((void *)&rand, sizeof(rand));
 		if (rand < 30) {
@@ -941,7 +941,7 @@ bpfhv_intr_tmr(struct timer_list *tmr)
 static void
 bpfhv_tx_clean(struct bpfhv_txq *txq)
 {
-	struct bpfhv_tx_context *tx_ctx = txq->tx_ctx;
+	struct bpfhv_tx_context *ctx = txq->ctx;
 	struct bpfhv_info *bi = txq->bi;
 	struct device *dev = bi->dev;
 	unsigned int count;
@@ -953,7 +953,7 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 		int ret;
 
 		ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_COMPLETE],
-					/*ctx=*/tx_ctx);
+					/*ctx=*/ctx);
 		if (ret == 0) {
 			/* No more completed transmissions. */
 			break;
@@ -963,7 +963,7 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 			break;
 		}
 
-		ntc = (unsigned int)tx_ctx->cookie;
+		ntc = (unsigned int)ctx->cookie;
 #if 1
 		ntc = txq->info_ntc; /* TODO remove */
 #endif
@@ -1000,7 +1000,7 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 static int
 bpfhv_rx_refill(struct bpfhv_rxq *rxq)
 {
-	struct bpfhv_rx_context *rx_ctx = rxq->rx_ctx;
+	struct bpfhv_rx_context *ctx = rxq->ctx;
 	struct bpfhv_info *bi = rxq->bi;
 	unsigned int i;
 	int ret;
@@ -1014,15 +1014,15 @@ bpfhv_rx_refill(struct bpfhv_rxq *rxq)
 
 		/* Prepare the context for publishing receive buffers. */
 		for (i = 0; i < n; i++) {
-			rx_ctx->buf_cookie[i] = (uintptr_t)NULL;
-			rx_ctx->phys[i] = (uintptr_t)NULL;
-			rx_ctx->len[i] = 70;
+			ctx->buf_cookie[i] = (uintptr_t)NULL;
+			ctx->phys[i] = (uintptr_t)NULL;
+			ctx->len[i] = 70;
 		}
-		rx_ctx->num_bufs = i;
+		ctx->num_bufs = i;
 		rxq->rx_free_bufs -= i;
 
 		ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_RX_PUBLISH],
-					/*ctx=*/rxq->rx_ctx);
+					/*ctx=*/rxq->ctx);
 		printk("rxp(%u bufs) --> %d\n", i, ret);
 	}
 
@@ -1038,7 +1038,7 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 {
 	struct bpfhv_rxq *rxq = container_of(napi, struct bpfhv_rxq, napi);
 	struct bpfhv_info *bi = rxq->bi;
-	struct bpfhv_rx_context *rx_ctx = rxq->rx_ctx;
+	struct bpfhv_rx_context *ctx = rxq->ctx;
 	int count;
 
 	for (count = 0; count < budget; count++) {
@@ -1046,7 +1046,7 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 		int ret;
 
 		ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_RX_COMPLETE],
-					/*ctx=*/rx_ctx);
+					/*ctx=*/ctx);
 		if (ret == 0) {
 			/* No more received packets. */
 			break;
@@ -1056,7 +1056,7 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 			break;
 		}
 
-		skb = (struct sk_buff *)rx_ctx->packet;
+		skb = (struct sk_buff *)ctx->packet;
 		if (unlikely(!skb)) {
 			printk("rxc() hv bug: skb not allocated\n");
 			break;
