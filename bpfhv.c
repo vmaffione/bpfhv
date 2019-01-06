@@ -112,7 +112,6 @@ struct bpfhv_txq {
 	 * by implementing a free-list within the array. */
 	struct bpfhv_tx_info		*info;
 	unsigned int			info_ntu;
-	unsigned int			info_ntc; /* TODO remove */
 };
 
 static int		bpfhv_probe(struct pci_dev *pdev,
@@ -770,7 +769,6 @@ bpfhv_resources_alloc(struct bpfhv_info *bi)
 			return -ENOMEM;
 		}
 		txq->info_ntu = 0;
-		txq->info_ntc = 0;
 	}
 
 	return 0;
@@ -908,9 +906,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_PUBLISH], /*ctx=*/ctx);
 	printk("txp(%u bytes) --> %d\n", skb->len, ret);
 
-	/* We should check ctx->oflags & BPFHV_OFLAGS_NOTIF_NEEDED, once
-	 * the txp program gets real. */
-	if (!skb->xmit_more) {
+	if (!skb->xmit_more && (ctx->oflags & BPFHV_OFLAGS_NOTIF_NEEDED)) {
 		writel(0, txq->doorbell);
 	}
 
@@ -964,9 +960,6 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 		}
 
 		ntc = (unsigned int)ctx->cookie;
-#if 1
-		ntc = txq->info_ntc; /* TODO remove */
-#endif
 		info = txq->info + ntc;
 		skb = info->skb;
 		for (;;) {
@@ -983,11 +976,6 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 			TX_INFO_IDX_INC(bi, ntc);
 			info = txq->info + ntc;
 		}
-#if 1
-		/* TODO remove */
-		TX_INFO_IDX_INC(bi, ntc);
-		txq->info_ntc = ntc;
-#endif
 		dev_kfree_skb_any(skb);
 	}
 
