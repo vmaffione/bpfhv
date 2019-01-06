@@ -5,7 +5,6 @@ Some goals:
 	  (virtio-net is good for Linux, but not for FreeBSD).
 
 TODO:
-	- A command register to stop/start the device (or maybe
-	  part of the feature negotiation mechanism ?)
 	- Two more programs to reclaim pending buffers (only
 	  when the device is stopped).
+        - Allocate context as DMA coherent memory.

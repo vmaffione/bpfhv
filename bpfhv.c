@@ -433,7 +433,7 @@ progname_from_idx(unsigned int prog_idx)
 static void
 ctx_paddr_write(struct bpfhv_info *bi, unsigned int qidx, void *vaddr)
 {
-	phys_addr_t paddr = virt_to_phys(vaddr);
+	phys_addr_t paddr = vaddr ? virt_to_phys(vaddr) : (phys_addr_t)0;
 
 	iowrite32(qidx, bi->ioaddr + BPFHV_IO_QUEUE_SELECT);
 	iowrite32(paddr & 0xffffffff,
