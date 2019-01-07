@@ -97,7 +97,7 @@ struct bpfhv_rx_context {
 /* Numbers for the helper calls used by bpfhv programs. */
 #define BPFHV_HELPER_MAGIC	0x4b8f0000
 enum bpfhv_helper_id {
-	BPFHV_FUNC_pkt_alloc = BPFHV_HELPER_MAGIC,
+	BPFHV_FUNC_rx_pkt_alloc = BPFHV_HELPER_MAGIC,
 };
 
 #ifndef BPFHV_FUNC
