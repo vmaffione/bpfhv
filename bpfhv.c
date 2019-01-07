@@ -377,15 +377,16 @@ BPF_CALL_1(bpf_hv_rx_pkt_alloc, struct bpfhv_rx_context *, ctx)
 	}
 
 	for (i = 0; i < ctx->num_bufs; i++) {
-		void *kbuf = (void *)ctx->buf_cookie[i];
+		struct bpfhv_rx_buf *rxb = ctx->bufs + i;
+		void *kbuf = (void *)rxb->cookie;
 
-		dma_unmap_single(rxq->bi->dev, (dma_addr_t)ctx->phys[i],
-				ctx->len[i], DMA_FROM_DEVICE);
+		dma_unmap_single(rxq->bi->dev, (dma_addr_t)rxb->paddr,
+				rxb->len, DMA_FROM_DEVICE);
 		if (i == 0) {
-			skb = napi_alloc_skb(&rxq->napi, ctx->len[i]);
+			skb = napi_alloc_skb(&rxq->napi, rxb->len);
 			if (skb) {
 				/* TODO remove the data copy */
-				skb_put_data(skb, kbuf, ctx->len[i]);
+				skb_put_data(skb, kbuf, rxb->len);
 				ctx->packet = (uintptr_t)skb;
 			}
 		} else {
@@ -867,8 +868,8 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		dev_kfree_skb_any(skb);
 		return NETDEV_TX_OK;
 	}
-	ctx->phys[0] = dma;
-	ctx->len[0] = len;
+	ctx->bufs[0].paddr = dma;
+	ctx->bufs[0].len = len;
 	i = 1;
 	info = txq->info + ntu;
 	info->dma = dma;
@@ -904,8 +905,8 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 			dev_kfree_skb_any(skb);
 			return NETDEV_TX_OK;
 		}
-		ctx->phys[i] = dma;
-		ctx->len[i] = len;
+		ctx->bufs[i].paddr = dma;
+		ctx->bufs[i].len = len;
 		info = txq->info + ntu;
 		info->dma = dma;
 		info->len = len;
@@ -1012,6 +1013,7 @@ bpfhv_rx_refill(struct bpfhv_rxq *rxq)
 			 * skb_frag_alloc. */
 			const size_t bufsize = 2048;
 			void *kbuf = kmalloc(bufsize, GFP_KERNEL);
+			struct bpfhv_rx_buf *rxb = ctx->bufs + i;
 			dma_addr_t dma;
 
 			if (kbuf == NULL) {
@@ -1025,9 +1027,9 @@ bpfhv_rx_refill(struct bpfhv_rxq *rxq)
 				kfree(kbuf);
 				break;
 			}
-			ctx->buf_cookie[i] = (uintptr_t)kbuf;
-			ctx->phys[i] = (uintptr_t)dma;
-			ctx->len[i] = bufsize;
+			rxb->cookie = (uintptr_t)kbuf;
+			rxb->paddr = (uintptr_t)dma;
+			rxb->len = bufsize;
 		}
 		ctx->num_bufs = i;
 		rxq->rx_free_bufs -= i;

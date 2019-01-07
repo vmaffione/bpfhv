@@ -1,7 +1,8 @@
 #ifndef __BPFHV_H__
 #define __BPFHV_H__
 /*
- *    Shared definitions for the eBPF paravirtual device.
+ *    Definitions for the eBPF paravirtual device, shared between
+ *    the guest driver and the hypervisor.
  *    2018 Vincenzo Maffione <v.maffione@gmail.it>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -29,11 +30,17 @@
 #include <stdint.h>
 #endif /* !__KERNEL__ */
 
+struct bpfhv_tx_buf {
+	uint64_t paddr;
+	uint32_t len;
+	uint32_t reserved;
+};
+
 /* Context for the transmit-side eBPF programs. */
 struct bpfhv_tx_context {
 	/* Reference to guest OS data structures, filled by the guest.
 	 * This field can be used by the helper functions. */
-	uint64_t	guest_priv;
+	uint64_t		guest_priv;
 	/*
 	 * Array of physical addresses and lengths, representing a
 	 * scatter-gather buffer. The number of valid bufs is stored
@@ -46,25 +53,31 @@ struct bpfhv_tx_context {
 	 * On completion, 'cookie' and 'oflags' are output arguments, while
 	 * all the other fields are invalid.
 	 */
-	uint64_t	cookie;
+	uint64_t		cookie;
 #define BPFHV_MAX_TX_BUFS		64
-	uint64_t	phys[BPFHV_MAX_TX_BUFS];
-	uint32_t	len[BPFHV_MAX_TX_BUFS];
-	uint32_t	num_bufs;
-	uint32_t	oflags;
+        struct bpfhv_tx_buf	bufs[BPFHV_MAX_TX_BUFS];
+	uint32_t		num_bufs;
+	uint32_t		oflags;
 #define BPFHV_OFLAGS_NOTIF_NEEDED	(1 << 0)
 #define BPFHV_OFLAGS_RESCHED_NEEDED	(1 << 1)
-	uint32_t	pad[14];
+	uint32_t		pad[14];
 
 	/* Private hv-side context follows here. */
-	char		opaque[0];
+	char			opaque[0];
+};
+
+struct bpfhv_rx_buf {
+	uint64_t cookie;
+	uint64_t paddr;
+	uint32_t len;
+	uint32_t reserved;
 };
 
 /* Context for the receive-side eBPF programs. */
 struct bpfhv_rx_context {
 	/* Reference to guest OS data structures, filled by the guest.
 	 * This field can be used by the helper functions. */
-	uint64_t	guest_priv;
+	uint64_t		guest_priv;
 	/*
 	 * Array of physical addresses and lengths, representing a set of
 	 * buffers. The number of valid bufs is stored in 'num_bufs'.
@@ -81,17 +94,15 @@ struct bpfhv_rx_context {
 	 * a helper call.
 	 * All the other fields are invalid.
 	 */
-	uint64_t	packet;
+	uint64_t		packet;
 #define BPFHV_MAX_RX_BUFS		64
-	uint64_t	buf_cookie[BPFHV_MAX_RX_BUFS];
-	uint64_t	phys[BPFHV_MAX_RX_BUFS];
-	uint32_t	len[BPFHV_MAX_RX_BUFS];
-	uint32_t	num_bufs;
-	uint32_t	oflags;
-	uint32_t	pad[14];
+	struct bpfhv_rx_buf	bufs[BPFHV_MAX_RX_BUFS];
+	uint32_t		num_bufs;
+	uint32_t		oflags;
+	uint32_t		pad[14];
 
 	/* Private hv-side context follows here. */
-	char		opaque[0];
+	char			opaque[0];
 };
 
 /* Numbers for the helper calls used by bpfhv programs. */
