@@ -3,7 +3,16 @@ Some goals:
 	- Provider can evolve the medatata header (e.g., virtio-net)
 	  to balance between the needs of FreeBSD and Linux.
 	  (virtio-net is good for Linux, but not for FreeBSD).
+        - Virtio 1.1 vs 1.0 (while 0.95 is still around). This is a
+          sign that there is a need for evolution and compatbility
+          problems.
 
-TODO:
+TODO (driver):
 	- Two more programs to reclaim pending buffers (only
 	  when the device is stopped).
+
+TODO (qemu):
+        - Replace cpu_physical_memory_[un]map() with dma_memory_[un]map()
+          and the MemoryRegionCache library. This should be only necessary
+          if the guest platform has an IOMMU.
+          Code in virtqueue_pop() and virtqueue_push().

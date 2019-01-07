@@ -369,17 +369,32 @@ static const uint8_t udp_pkt[] = {
 BPF_CALL_1(bpf_hv_pkt_alloc, struct bpfhv_rx_context *, ctx)
 {
 	struct bpfhv_rxq *rxq = RXQ_FROM_CTX(ctx);
-	struct sk_buff *skb = napi_alloc_skb(&rxq->napi, sizeof(udp_pkt));
+	struct sk_buff *skb = NULL;
+	int i;
 
-	ctx->packet = (uintptr_t)skb;
-	if (unlikely(!skb)) {
-		return -ENOMEM;
+	if (unlikely(ctx->num_bufs == 0)) {
+		return -EINVAL;
 	}
 
-	/* TODO Build the packet from ctx->buf_cookie[] and ctx->len[] */
-	skb_put_data(skb, udp_pkt, sizeof(udp_pkt));
+	for (i = 0; i < ctx->num_bufs; i++) {
+		void *kbuf = (void *)ctx->buf_cookie[i];
 
-	return 0;
+		dma_unmap_single(rxq->bi->dev, (dma_addr_t)ctx->phys[i],
+				ctx->len[i], DMA_FROM_DEVICE);
+		if (i == 0) {
+			skb = napi_alloc_skb(&rxq->napi, ctx->len[i]);
+			if (skb) {
+				/* TODO remove the data copy */
+				skb_put_data(skb, kbuf, ctx->len[i]);
+				ctx->packet = (uintptr_t)skb;
+			}
+		} else {
+			/* TODO handle all the fragments. */
+		}
+		kfree(kbuf);
+	}
+
+	return skb ? 0 : -ENOMEM;
 }
 
 #undef PROGDUMP
@@ -918,17 +933,6 @@ bpfhv_intr_tmr(struct timer_list *tmr)
 {
 	struct bpfhv_info *bi = from_timer(bi, tmr, intr_tmr);
 
-	{
-		/* Trigger "reception" of a packet (see rxc_insns[]). */
-		uint8_t rand;
-		uint64_t *rxcntp = (uint64_t *)(&bi->rxqs[0].ctx[1]);
-
-		get_random_bytes((void *)&rand, sizeof(rand));
-		if (rand < 30) {
-			(*rxcntp)++;
-		}
-	}
-
 	napi_schedule(&bi->rxqs[0].napi);
 	bpfhv_tx_clean(&bi->txqs[0]);
 	mod_timer(&bi->intr_tmr, jiffies + msecs_to_jiffies(300));
@@ -990,10 +994,12 @@ bpfhv_rx_refill(struct bpfhv_rxq *rxq)
 {
 	struct bpfhv_rx_context *ctx = rxq->ctx;
 	struct bpfhv_info *bi = rxq->bi;
+	struct device *dev = bi->dev;
+	bool oom = false;
 	unsigned int i;
 	int ret;
 
-	while (rxq->rx_free_bufs > 0) {
+	while (rxq->rx_free_bufs > 0 && !oom) {
 		size_t n = rxq->rx_free_bufs;
 
 		if (n > BPFHV_MAX_RX_BUFS) {
@@ -1002,21 +1008,38 @@ bpfhv_rx_refill(struct bpfhv_rxq *rxq)
 
 		/* Prepare the context for publishing receive buffers. */
 		for (i = 0; i < n; i++) {
-			ctx->buf_cookie[i] = (uintptr_t)NULL;
-			ctx->phys[i] = (uintptr_t)NULL;
-			ctx->len[i] = 70;
+			/* TODO allocate buffers using get_page or
+			 * skb_frag_alloc. */
+			const size_t bufsize = 2048;
+			void *kbuf = kmalloc(bufsize, GFP_KERNEL);
+			dma_addr_t dma;
+
+			if (kbuf == NULL) {
+				oom = true;
+				break;
+			}
+
+			dma = dma_map_single(dev, kbuf, bufsize,
+						DMA_FROM_DEVICE);
+			if (unlikely(dma_mapping_error(dev, dma))) {
+				kfree(kbuf);
+				break;
+			}
+			ctx->buf_cookie[i] = (uintptr_t)kbuf;
+			ctx->phys[i] = (uintptr_t)dma;
+			ctx->len[i] = bufsize;
 		}
 		ctx->num_bufs = i;
 		rxq->rx_free_bufs -= i;
 
 		ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_RX_PUBLISH],
-					/*ctx=*/rxq->ctx);
+					/*ctx=*/ctx);
 		printk("rxp(%u bufs) --> %d\n", i, ret);
-	}
 
-	/* We should check (oflags & BPFHV_OFLAGS_NOTIF_NEEDED) once
-	 * rxp gets real. */
-	writel(0, rxq->doorbell);
+		if (ctx->oflags & BPFHV_OFLAGS_NOTIF_NEEDED) {
+			writel(0, rxq->doorbell);
+		}
+	}
 
 	return 0;
 }
@@ -1025,8 +1048,8 @@ static int
 bpfhv_rx_poll(struct napi_struct *napi, int budget)
 {
 	struct bpfhv_rxq *rxq = container_of(napi, struct bpfhv_rxq, napi);
-	struct bpfhv_info *bi = rxq->bi;
 	struct bpfhv_rx_context *ctx = rxq->ctx;
+	struct bpfhv_info *bi = rxq->bi;
 	int count;
 
 	for (count = 0; count < budget; count++) {
