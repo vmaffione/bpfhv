@@ -28,6 +28,11 @@
 
 #include "bpfhv.h"
 
+#define DEFAULT_MSG_ENABLE (NETIF_MSG_DRV|NETIF_MSG_PROBE|NETIF_MSG_LINK)
+static int debug = -1;
+module_param(debug, int, 0);
+MODULE_PARM_DESC(debug, "Debug level (0=none,...,16=all)");
+
 struct bpfhv_rxq;
 struct bpfhv_txq;
 
@@ -58,6 +63,10 @@ struct bpfhv_info {
 
 	/* Maximum number of bufs available for transmission. */
 	size_t				tx_bufs;
+
+	/* Variable needed to use netif logging macros (netif_info,
+	 * netif_err, etc.). */
+	int				msg_enable;
 
 	/* Temporary timer for interrupt emulation. */
 	struct timer_list		intr_tmr;
@@ -130,7 +139,8 @@ static int		bpfhv_programs_setup(struct bpfhv_info *bi);
 static int		bpfhv_helper_calls_fixup(struct bpfhv_info *bi,
 						struct bpf_insn *insns,
 						size_t insns_count);
-static struct bpf_prog	*bpfhv_prog_alloc(const char *progname,
+static struct bpf_prog	*bpfhv_prog_alloc(struct bpfhv_info *bi,
+					const char *progname,
 					struct bpf_insn *insns,
 					size_t insn_count);
 static int		bpfhv_programs_teardown(struct bpfhv_info *bi);
@@ -251,6 +261,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	bi->progmmio_addr = progmmio_addr;
 	bi->num_rx_queues = num_rx_queues;
 	bi->num_tx_queues = num_tx_queues;
+	bi->msg_enable = netif_msg_init(debug, DEFAULT_MSG_ENABLE);
 
 	bi->rxqs = (struct bpfhv_rxq *)(bi + 1);
 	bi->txqs = (struct bpfhv_txq *)(bi->rxqs + num_rx_queues);
@@ -383,7 +394,8 @@ static int bpfhv_irqs_setup(struct bpfhv_info *bi)
 	ret = pci_alloc_irq_vectors(bi->pdev, num_queues, num_queues,
 				    PCI_IRQ_MSIX);
 	if (ret != num_queues) {
-		printk("Failed to enable msix vectors (%d)\n", ret);
+		netif_err(bi, intr, bi->netdev,
+			"Failed to enable msix vectors (%d)\n", ret);
 		return ret;
 	}
 
@@ -409,10 +421,12 @@ static int bpfhv_irqs_setup(struct bpfhv_info *bi)
 				"%s-%d", bi->netdev->name, i);
 		ret = request_irq(vector, handler, 0, irq_name, q);
 		if (ret) {
-			printk("Unable to allocate interrupt (%d)\n", ret);
+			netif_err(bi, intr, bi->netdev,
+				"Unable to allocate interrupt (%d)\n", ret);
 			goto err_irqs;
 		}
-		printk("bpfhv: IRQ for queue #%d --> %u\n", i, vector);
+		netif_info(bi, intr, bi->netdev,
+			"bpfhv: IRQ for queue #%d --> %u\n", i, vector);
 	}
 
 	return 0;
@@ -652,7 +666,8 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 	insns = kmalloc(BPFHV_PROG_SIZE_MAX * sizeof(struct bpf_insn),
 			GFP_KERNEL);
 	if (!insns) {
-		printk("Failed to allocate memory for instructions\n");
+		netif_err(bi, drv, bi->netdev,
+			"Failed to allocate memory for instructions\n");
 		return -ENOMEM;
 	}
 
@@ -674,7 +689,8 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		iowrite32(i, bi->ioaddr + BPFHV_IO_PROG_SELECT);
 		prog_len = ioread32(bi->ioaddr + BPFHV_IO_PROG_SIZE);
 		if (prog_len == 0 || prog_len > BPFHV_PROG_SIZE_MAX) {
-			printk("Invalid program length %u\n",
+			netif_err(bi, drv, bi->netdev,
+				"Invalid program length %u\n",
 				(unsigned int)prog_len);
 			goto out;
 		}
@@ -699,7 +715,7 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		}
 
 		/* Allocate an eBPF program for 'insns'. */
-		bi->progs[i] = bpfhv_prog_alloc(progname_from_idx(i),
+		bi->progs[i] = bpfhv_prog_alloc(bi, progname_from_idx(i),
 						insns, prog_len);
 		if (bi->progs[i] == NULL) {
 			goto out;
@@ -768,7 +784,8 @@ bpfhv_helper_calls_fixup(struct bpfhv_info *bi, struct bpf_insn *insns,
 			func = bpf_hv_rx_pkt_alloc;
 			break;
 		default:
-			printk("Uknown helper function id %08x\n", insns->imm);
+			netif_err(bi, drv, bi->netdev,
+				"Uknown helper function id %08x\n", insns->imm);
 			return -EINVAL;
 			break;
 		}
@@ -781,8 +798,8 @@ bpfhv_helper_calls_fixup(struct bpfhv_info *bi, struct bpf_insn *insns,
 
 /* Taken from kernel/bpf/syscall.c:bpf_prog_load(). */
 static struct bpf_prog *
-bpfhv_prog_alloc(const char *progname, struct bpf_insn *insns,
-		size_t insn_count)
+bpfhv_prog_alloc(struct bpfhv_info *bi, const char *progname,
+		struct bpf_insn *insns, size_t insn_count)
 {
 	struct bpf_prog *prog;
 	int ret;
@@ -805,7 +822,8 @@ bpfhv_prog_alloc(const char *progname, struct bpf_insn *insns,
 
 	prog = bpf_prog_select_runtime(prog, &ret);
 	if (ret < 0) {
-		printk("bpf_prog_select_runtime() failed: %d\n", ret);
+		netif_err(bi, drv, bi->netdev,
+			"bpf_prog_select_runtime() failed: %d\n", ret);
 		bpf_prog_free(prog);
 		return NULL;
 	}
@@ -1037,7 +1055,8 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	txq->info_ntu = ntu;
 
 	ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_PUBLISH], /*ctx=*/ctx);
-	printk("txp(%u bytes) --> %d\n", skb->len, ret);
+	netif_info(bi, tx_queued, bi->netdev,
+		"txp(%u bytes) --> %d\n", skb->len, ret);
 
 	if (!skb->xmit_more && (ctx->oflags & BPFHV_OFLAGS_NOTIF_NEEDED)) {
 		writel(0, txq->doorbell);
@@ -1077,7 +1096,8 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 			break;
 		}
 		if (unlikely(ret < 0)) {
-			printk("tcx() failed --> %d\n", ret);
+			netif_err(bi, tx_err, bi->netdev,
+				"tcx() failed --> %d\n", ret);
 			break;
 		}
 
@@ -1102,7 +1122,8 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 	}
 
 	if (count) {
-		printk("txc() --> %d packets\n", count);
+		netif_info(bi, tx_done, bi->netdev,
+			"txc() --> %d packets\n", count);
 		txq->tx_free_bufs += count;
 	}
 }
@@ -1153,7 +1174,8 @@ bpfhv_rx_refill(struct bpfhv_rxq *rxq)
 
 		ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_RX_PUBLISH],
 					/*ctx=*/ctx);
-		printk("rxp(%u bufs) --> %d\n", i, ret);
+		netif_info(bi, drv, bi->netdev,
+			"rxp(%u bufs) --> %d\n", i, ret);
 
 		if (ctx->oflags & BPFHV_OFLAGS_NOTIF_NEEDED) {
 			writel(0, rxq->doorbell);
@@ -1182,13 +1204,15 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 			break;
 		}
 		if (unlikely(ret < 0)) {
-			printk("rxc() failed --> %d\n", ret);
+			netif_err(bi, rx_err, bi->netdev,
+				"rxc() failed --> %d\n", ret);
 			break;
 		}
 
 		skb = (struct sk_buff *)ctx->packet;
 		if (unlikely(!skb)) {
-			printk("rxc() hv bug: skb not allocated\n");
+			netif_err(bi, rx_err, bi->netdev,
+				"rxc() hv bug: skb not allocated\n");
 			break;
 		}
 
@@ -1199,7 +1223,8 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 	napi_complete(napi);
 
 	if (count > 0) {
-		printk("rxc() --> %d packets\n", count);
+		netif_info(bi, rx_status, bi->netdev,
+			"rxc() --> %d packets\n", count);
 	}
 
 	return 0;
@@ -1221,54 +1246,6 @@ bpfhv_change_mtu(struct net_device *netdev, int new_mtu)
 	return 0;
 }
 
-#undef TEST
-#ifdef TEST
-static int
-test_bpf_program(const char *progname, struct bpf_insn *insns,
-		size_t insn_count)
-{
-	struct bpf_prog *prog;
-	int ret;
-
-	prog = bpfhv_prog_alloc(progname, insns, insn_count);
-	if (!prog) {
-		return -EPERM;
-	}
-
-	ret = BPF_PROG_RUN(prog, /*ctx=*/NULL);
-	printk("BPF_PROG_RUN(%s) returns %d\n", prog->aux->name, ret);
-
-	bpf_prog_free(prog);
-
-	return 0;
-}
-
-static void
-test_bpf_programs(void)
-{
-	struct bpf_insn insns1[] = {
-		BPF_MOV64_IMM(BPF_REG_2, 20),		/* R2 = 20 */
-		BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, 10),	/* R2 += 10 */
-		BPF_MOV64_REG(BPF_REG_3, BPF_REG_2),	/* R3 = R2 */
-		BPF_MOV64_REG(BPF_REG_0, BPF_REG_3),	/* R0 = R3 */
-		BPF_EXIT_INSN(),
-	};
-
-	struct bpf_insn insns2[] = {
-		BPF_MOV64_IMM(BPF_REG_8, 0),			/* R8 = 0 */
-		BPF_MOV64_IMM(BPF_REG_7, 0),			/* R7 = 0 */
-		BPF_ALU64_IMM(BPF_ADD, BPF_REG_7, 3),		/* l: R7 += 3 */
-		BPF_ALU64_REG(BPF_SUB, BPF_REG_7, BPF_REG_8),	/* R7 -= R8 */
-		BPF_ALU64_IMM(BPF_ADD, BPF_REG_8, 1),		/* R8 += 1 */
-		BPF_JMP_IMM(BPF_JLT, BPF_REG_8, 10, -4),	/* if R8 < 10 goto l */
-		BPF_MOV64_REG(BPF_REG_0, BPF_REG_7),		/* R0 = R7 */
-		BPF_EXIT_INSN(),
-	};
-	test_bpf_program("simple", insns1, sizeof(insns1) / sizeof(insns1[0]));
-	test_bpf_program("fixed-loop", insns2, sizeof(insns2) / sizeof(insns2[0]));
-}
-#endif  /* TEST */
-
 /* List of (VendorID, DeviceID) pairs supported by this driver. */
 static struct pci_device_id bpfhv_device_table[] = {
 	{ PCI_DEVICE(BPFHV_PCI_VENDOR_ID, BPFHV_PCI_DEVICE_ID), },
@@ -1289,19 +1266,7 @@ static struct pci_driver bpfhv_driver = {
 static int __init
 bpfhv_init(void)
 {
-	int ret;
-
-#ifdef TEST
-	test_bpf_programs();
-#endif  /* TEST */
-
-	ret = pci_register_driver(&bpfhv_driver);
-	if (ret < 0) {
-		printk("Failed to register PCI driver (error=%d)\n", ret);
-		return ret;
-	}
-
-	return 0;
+	return pci_register_driver(&bpfhv_driver);
 }
 
 static void __exit
