@@ -310,24 +310,24 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 					doorbell_size * (num_rx_queues + i));
 	}
 
-	ret = bpfhv_irqs_setup(bi);
-	if (ret) {
-		goto err_irqs;
-	}
-
 	/* Register the network interface within the network stack. */
 	ret = register_netdev(netdev);
 	if (ret) {
 		goto err_reg;
 	}
 
+	ret = bpfhv_irqs_setup(bi);
+	if (ret) {
+		goto err_irqs;
+	}
+
 	netif_carrier_on(netdev);
 
 	return 0;
 
-err_reg:
-	bpfhv_irqs_teardown(bi);
 err_irqs:
+	unregister_netdev(netdev);
+err_reg:
 	bpfhv_programs_teardown(bi);
 err_prog:
 	free_netdev(netdev);
@@ -360,8 +360,8 @@ bpfhv_remove(struct pci_dev *pdev)
 
 		netif_napi_del(&rxq->napi);
 	}
-	unregister_netdev(netdev);
 	bpfhv_irqs_teardown(bi);
+	unregister_netdev(netdev);
 	bpfhv_programs_teardown(bi);
 	iounmap(bi->progmmio_addr);
 	iounmap(bi->dbmmio_addr);
