@@ -79,7 +79,7 @@ struct bpfhv_rxq {
 
 	struct napi_struct		napi;
 
-	char msix_name[64];
+	char irq_name[64];
 
 };
 
@@ -115,7 +115,7 @@ struct bpfhv_txq {
 	struct bpfhv_tx_info		*info;
 	unsigned int			info_ntu;
 
-	char msix_name[64];
+	char irq_name[64];
 };
 
 static int		bpfhv_probe(struct pci_dev *pdev,
@@ -390,24 +390,24 @@ static int bpfhv_irqs_setup(struct bpfhv_info *bi)
 	for (i = 0; i < num_queues; i++) {
 		unsigned int vector = pci_irq_vector(bi->pdev, i);
 		irq_handler_t handler = NULL;
-		char *msix_name = NULL;
+		char *irq_name = NULL;
 		void *q = NULL;
 
 		if (i < bi->num_rx_queues) {
-			msix_name = bi->rxqs[i].msix_name;
+			irq_name = bi->rxqs[i].irq_name;
 			q = bi->rxqs + i;
 			handler = bpfhv_rx_intr;
 		} else {
 			i -= bi->num_rx_queues;
-			msix_name = bi->txqs[i].msix_name;
+			irq_name = bi->txqs[i].irq_name;
 			q = bi->txqs + i;
 			handler = bpfhv_tx_intr;
 			i += bi->num_rx_queues;
 		}
 
-		snprintf(msix_name, sizeof(bi->rxqs[0].msix_name),
+		snprintf(irq_name, sizeof(bi->rxqs[0].irq_name),
 				"%s-%d", bi->netdev->name, i);
-		ret = request_irq(vector, handler, 0, msix_name, q);
+		ret = request_irq(vector, handler, 0, irq_name, q);
 		if (ret) {
 			printk("Unable to allocate interrupt (%d)\n", ret);
 			goto err_irqs;
