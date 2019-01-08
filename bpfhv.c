@@ -1182,6 +1182,7 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 				"rxc() failed --> %d\n", ret);
 			break;
 		}
+		rxq->rx_free_bufs++;
 
 		skb = (struct sk_buff *)ctx->packet;
 		if (unlikely(!skb)) {
@@ -1192,6 +1193,10 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 
 		skb->protocol = eth_type_trans(skb, bi->netdev);
 		netif_receive_skb(skb);
+
+		if (rxq->rx_free_bufs >= 16) {
+			bpfhv_rx_refill(rxq);
+		}
 	}
 
 	napi_complete(napi);
