@@ -121,6 +121,8 @@ struct bpfhv_txq {
 	struct bpfhv_tx_info		*info;
 	unsigned int			info_ntu;
 
+	struct napi_struct		napi;
+
 	char irq_name[64];
 };
 
@@ -148,6 +150,7 @@ static int		bpfhv_close(struct net_device *netdev);
 static void		bpfhv_resources_dealloc(struct bpfhv_info *bi);
 static netdev_tx_t	bpfhv_start_xmit(struct sk_buff *skb,
 					struct net_device *netdev);
+static int		bpfhv_tx_poll(struct napi_struct *napi, int budget);
 static void		bpfhv_tx_clean(struct bpfhv_txq *txq);
 static int		bpfhv_rx_refill(struct bpfhv_rxq *rxq);
 static int		bpfhv_rx_poll(struct napi_struct *napi, int budget);
@@ -295,9 +298,9 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	for (i = 0; i < num_rx_queues; i++) {
 		struct bpfhv_rxq *rxq = bi->rxqs + i;
 
+		rxq->bi = bi;
 		netif_napi_add(netdev, &rxq->napi, bpfhv_rx_poll,
 				NAPI_POLL_WEIGHT);
-		rxq->bi = bi;
 		rxq->doorbell = (u32* __iomem)(dbmmio_addr +
 						doorbell_size * i);
 	}
@@ -306,6 +309,8 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		struct bpfhv_txq *txq = bi->txqs + i;
 
 		txq->bi = bi;
+		netif_napi_add(netdev, &txq->napi, bpfhv_tx_poll,
+				NAPI_POLL_WEIGHT);
 		txq->doorbell = (u32* __iomem)(dbmmio_addr +
 					doorbell_size * (num_rx_queues + i));
 	}
@@ -475,8 +480,7 @@ bpfhv_tx_intr(int irq, void *data)
 {
 	struct bpfhv_txq *txq = data;
 
-	/* TODO protect txq from concurrent access */
-	bpfhv_tx_clean(txq);
+	napi_schedule(&txq->napi);
 
 	return IRQ_HANDLED;
 }
@@ -874,6 +878,12 @@ bpfhv_open(struct net_device *netdev)
 		napi_enable(&rxq->napi);
 	}
 
+	for (i = 0; i < bi->num_tx_queues; i++) {
+		struct bpfhv_txq *txq = bi->txqs + i;
+
+		napi_enable(&txq->napi);
+	}
+
 	/* Enable transmit and receive in the hardware. */
 	iowrite32(BPFHV_CTRL_RX_ENABLE | BPFHV_CTRL_TX_ENABLE,
 			bi->ioaddr + BPFHV_IO_CTRL);
@@ -923,6 +933,12 @@ bpfhv_close(struct net_device *netdev)
 		struct bpfhv_rxq *rxq = bi->rxqs + i;
 
 		napi_disable(&rxq->napi);
+	}
+
+	for (i = 0; i < bi->num_tx_queues; i++) {
+		struct bpfhv_txq *txq = bi->txqs + i;
+
+		napi_disable(&txq->napi);
 	}
 
 	bpfhv_resources_dealloc(bi);
@@ -1047,6 +1063,26 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	}
 
 	return NETDEV_TX_OK;
+}
+
+static int
+bpfhv_tx_poll(struct napi_struct *napi, int budget)
+{
+	struct bpfhv_txq *txq = container_of(napi, struct bpfhv_txq, napi);
+	struct netdev_queue *q =
+		netdev_get_tx_queue(txq->bi->netdev, txq - txq->bi->txqs);
+
+	__netif_tx_lock(q, raw_smp_processor_id());
+	bpfhv_tx_clean(txq);
+	__netif_tx_unlock(q);
+
+	napi_complete(napi);
+
+	if (txq->tx_free_bufs >= 2 + MAX_SKB_FRAGS) {
+		netif_tx_wake_queue(q);
+	}
+
+	return 0;
 }
 
 static void
