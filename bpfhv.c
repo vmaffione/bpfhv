@@ -67,9 +67,6 @@ struct bpfhv_info {
 	/* Variable needed to use netif logging macros (netif_info,
 	 * netif_err, etc.). */
 	int				msg_enable;
-
-	/* Temporary timer for interrupt emulation. */
-	struct timer_list		intr_tmr;
 };
 
 struct bpfhv_rxq {
@@ -152,7 +149,6 @@ static void		bpfhv_resources_dealloc(struct bpfhv_info *bi);
 static netdev_tx_t	bpfhv_start_xmit(struct sk_buff *skb,
 					struct net_device *netdev);
 static void		bpfhv_tx_clean(struct bpfhv_txq *txq);
-static void		bpfhv_intr_tmr(struct timer_list *tmr);
 static int		bpfhv_rx_refill(struct bpfhv_rxq *rxq);
 static int		bpfhv_rx_poll(struct napi_struct *napi, int budget);
 static struct net_device_stats *bpfhv_get_stats(struct net_device *netdev);
@@ -325,8 +321,6 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_reg;
 	}
 
-	timer_setup(&bi->intr_tmr, bpfhv_intr_tmr, 0);
-
 	netif_carrier_on(netdev);
 
 	return 0;
@@ -471,7 +465,7 @@ bpfhv_rx_intr(int irq, void *data)
 {
 	struct bpfhv_rxq *rxq = data;
 
-	(void) rxq;
+	napi_schedule(&rxq->napi);
 
 	return IRQ_HANDLED;
 }
@@ -481,7 +475,8 @@ bpfhv_tx_intr(int irq, void *data)
 {
 	struct bpfhv_txq *txq = data;
 
-	(void) txq;
+	/* TODO protect txq from concurrent access */
+	bpfhv_tx_clean(txq);
 
 	return IRQ_HANDLED;
 }
@@ -883,8 +878,6 @@ bpfhv_open(struct net_device *netdev)
 	iowrite32(BPFHV_CTRL_RX_ENABLE | BPFHV_CTRL_TX_ENABLE,
 			bi->ioaddr + BPFHV_IO_CTRL);
 
-	mod_timer(&bi->intr_tmr, jiffies + msecs_to_jiffies(300));
-
 	return 0;
 }
 
@@ -926,7 +919,6 @@ bpfhv_close(struct net_device *netdev)
 	/* Disable transmit and receive in the hardware. */
 	iowrite32(0, bi->ioaddr + BPFHV_IO_CTRL);
 
-	del_timer_sync(&bi->intr_tmr);
 	for (i = 0; i < bi->num_rx_queues; i++) {
 		struct bpfhv_rxq *rxq = bi->rxqs + i;
 
@@ -1055,16 +1047,6 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	}
 
 	return NETDEV_TX_OK;
-}
-
-static void
-bpfhv_intr_tmr(struct timer_list *tmr)
-{
-	struct bpfhv_info *bi = from_timer(bi, tmr, intr_tmr);
-
-	napi_schedule(&bi->rxqs[0].napi);
-	bpfhv_tx_clean(&bi->txqs[0]);
-	mod_timer(&bi->intr_tmr, jiffies + msecs_to_jiffies(300));
 }
 
 static void
