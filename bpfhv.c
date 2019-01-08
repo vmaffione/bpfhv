@@ -29,8 +29,8 @@
 #include "bpfhv.h"
 
 #define DEFAULT_MSG_ENABLE (NETIF_MSG_DRV|NETIF_MSG_PROBE|NETIF_MSG_LINK)
-static int debug = -1;
-module_param(debug, int, 0);
+static int debug = -1; /* use DEFAULT_MSG_ENABLE by default */
+module_param(debug, int, /* perm = allow override on modprobe */0);
 MODULE_PARM_DESC(debug, "Debug level (0=none,...,16=all)");
 
 struct bpfhv_rxq;
@@ -394,7 +394,7 @@ static int bpfhv_irqs_setup(struct bpfhv_info *bi)
 	ret = pci_alloc_irq_vectors(bi->pdev, num_queues, num_queues,
 				    PCI_IRQ_MSIX);
 	if (ret != num_queues) {
-		netif_err(bi, intr, bi->netdev,
+		netif_err(bi, probe, bi->netdev,
 			"Failed to enable msix vectors (%d)\n", ret);
 		return ret;
 	}
@@ -421,7 +421,7 @@ static int bpfhv_irqs_setup(struct bpfhv_info *bi)
 				"%s-%d", bi->netdev->name, i);
 		ret = request_irq(vector, handler, 0, irq_name, q);
 		if (ret) {
-			netif_err(bi, intr, bi->netdev,
+			netif_err(bi, probe, bi->netdev,
 				"Unable to allocate interrupt (%d)\n", ret);
 			goto err_irqs;
 		}
@@ -1174,7 +1174,7 @@ bpfhv_rx_refill(struct bpfhv_rxq *rxq)
 
 		ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_RX_PUBLISH],
 					/*ctx=*/ctx);
-		netif_info(bi, drv, bi->netdev,
+		netif_info(bi, rx_status, bi->netdev,
 			"rxp(%u bufs) --> %d\n", i, ret);
 
 		if (ctx->oflags & BPFHV_OFLAGS_NOTIF_NEEDED) {
