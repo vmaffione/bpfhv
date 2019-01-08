@@ -79,6 +79,8 @@ struct bpfhv_rxq {
 
 	struct napi_struct		napi;
 
+	char msix_name[64];
+
 };
 
 /* Information associated to a pending transmit buffer. */
@@ -112,12 +114,18 @@ struct bpfhv_txq {
 	 * by implementing a free-list within the array. */
 	struct bpfhv_tx_info		*info;
 	unsigned int			info_ntu;
+
+	char msix_name[64];
 };
 
 static int		bpfhv_probe(struct pci_dev *pdev,
 					const struct pci_device_id *id);
 static void		bpfhv_remove(struct pci_dev *pdev);
 static void		bpfhv_shutdown(struct pci_dev *pdev);
+static int		bpfhv_irqs_setup(struct bpfhv_info *bi);
+static void		bpfhv_irqs_teardown(struct bpfhv_info *bi);
+static irqreturn_t	bpfhv_rx_intr(int irq, void *data);
+static irqreturn_t	bpfhv_tx_intr(int irq, void *data);
 static int		bpfhv_programs_setup(struct bpfhv_info *bi);
 static int		bpfhv_helper_calls_fixup(struct bpfhv_info *bi,
 						struct bpf_insn *insns,
@@ -295,6 +303,11 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 					doorbell_size * (num_rx_queues + i));
 	}
 
+	ret = bpfhv_irqs_setup(bi);
+	if (ret) {
+		goto err_irqs;
+	}
+
 	/* Register the network interface within the network stack. */
 	ret = register_netdev(netdev);
 	if (ret) {
@@ -306,7 +319,10 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	netif_carrier_on(netdev);
 
 	return 0;
+
 err_reg:
+	bpfhv_irqs_teardown(bi);
+err_irqs:
 	bpfhv_programs_teardown(bi);
 err_prog:
 	free_netdev(netdev);
@@ -340,6 +356,7 @@ bpfhv_remove(struct pci_dev *pdev)
 		netif_napi_del(&rxq->napi);
 	}
 	unregister_netdev(netdev);
+	bpfhv_irqs_teardown(bi);
 	bpfhv_programs_teardown(bi);
 	iounmap(bi->progmmio_addr);
 	iounmap(bi->dbmmio_addr);
@@ -356,6 +373,106 @@ bpfhv_shutdown(struct pci_dev *pdev)
 	pci_disable_device(pdev);
 }
 
+static int bpfhv_irqs_setup(struct bpfhv_info *bi)
+{
+	const size_t num_queues = bi->num_rx_queues + bi->num_tx_queues;
+	int ret = 0;
+	int i;
+
+	/* Allocate the MSI-X interrupt vectors we need. */
+	ret = pci_alloc_irq_vectors(bi->pdev, num_queues, num_queues,
+				    PCI_IRQ_MSIX);
+	if (ret != num_queues) {
+		printk("Failed to enable msix vectors (%d)\n", ret);
+		return ret;
+	}
+
+	for (i = 0; i < num_queues; i++) {
+		unsigned int vector = pci_irq_vector(bi->pdev, i);
+		irq_handler_t handler = NULL;
+		char *msix_name = NULL;
+		void *q = NULL;
+
+		if (i < bi->num_rx_queues) {
+			msix_name = bi->rxqs[i].msix_name;
+			q = bi->rxqs + i;
+			handler = bpfhv_rx_intr;
+		} else {
+			i -= bi->num_rx_queues;
+			msix_name = bi->txqs[i].msix_name;
+			q = bi->txqs + i;
+			handler = bpfhv_tx_intr;
+			i += bi->num_rx_queues;
+		}
+
+		snprintf(msix_name, sizeof(bi->rxqs[0].msix_name),
+				"%s-%d", bi->netdev->name, i);
+		ret = request_irq(vector, handler, 0, msix_name, q);
+		if (ret) {
+			printk("Unable to allocate interrupt (%d)\n", ret);
+			goto err_irqs;
+		}
+		printk("bpfhv: IRQ for queue #%d --> %u\n", i, vector);
+	}
+
+	return 0;
+
+err_irqs:
+	for (i--; i>=0; i--) {
+		void *q = NULL;
+
+		if (i < bi->num_rx_queues) {
+			q = bi->rxqs + i;
+		} else {
+			q = bi->txqs + i - bi->num_rx_queues;
+		}
+		free_irq(pci_irq_vector(bi->pdev, i), q);
+	}
+	pci_free_irq_vectors(bi->pdev);
+
+	return ret;
+}
+
+static void bpfhv_irqs_teardown(struct bpfhv_info *bi)
+{
+	const size_t num_queues = bi->num_rx_queues + bi->num_tx_queues;
+	int i;
+
+	for (i = 0; i < num_queues; i++) {
+		void *q = NULL;
+
+		if (i < bi->num_rx_queues) {
+			q = bi->rxqs + i;
+		} else {
+			q = bi->txqs + i - bi->num_rx_queues;
+		}
+		free_irq(pci_irq_vector(bi->pdev, i), q);
+	}
+
+	pci_free_irq_vectors(bi->pdev);
+}
+
+static irqreturn_t
+bpfhv_rx_intr(int irq, void *data)
+{
+	struct bpfhv_rxq *rxq = data;
+
+	(void) rxq;
+
+	return IRQ_HANDLED;
+}
+
+static irqreturn_t
+bpfhv_tx_intr(int irq, void *data)
+{
+	struct bpfhv_txq *txq = data;
+
+	(void) txq;
+
+	return IRQ_HANDLED;
+}
+
+/* TODO remove */
 static const uint8_t udp_pkt[] = {
 	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x45, 0x10,
 	0x00, 0x2e, 0x00, 0x00, 0x40, 0x00, 0x40, 0x11, 0x26, 0xad, 0x0a, 0x00, 0x00, 0x01, 0x0a, 0x01,
