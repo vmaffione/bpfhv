@@ -1014,12 +1014,7 @@ bpfhv_resources_dealloc(struct bpfhv_info *bi)
 	}
 }
 
-#define TX_INFO_IDX_INC(_bi, _idx) \
-	do {\
-		if (unlikely(++(_idx) == (_bi)->tx_bufs)) {\
-			(_idx) = 0;\
-		}\
-	} while (0)
+#define F_MAPPED_AS_PAGE	(0x1)
 
 static netdev_tx_t
 bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
@@ -1055,7 +1050,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	}
 	ctx->bufs[0].paddr = dma;
 	ctx->bufs[0].len = len;
-	ctx->bufs[0].cookie = ((uintptr_t)skb) | 0;
+	ctx->bufs[0].cookie = ((uintptr_t)skb) | /* not mapped as a page */0;
 	i = 1;
 
 	for (f = 0; f < nr_frags; f++, i++) {
@@ -1070,7 +1065,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 			for (i--; i >= 0; i--) {
 				struct bpfhv_tx_buf *txb = ctx->bufs + i;
 
-				if (txb->cookie & 0x1) {
+				if (txb->cookie & F_MAPPED_AS_PAGE) {
 					dma_unmap_page(dev, txb->paddr,
 							txb->len, DMA_TO_DEVICE);
 				} else {
@@ -1083,7 +1078,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		}
 		ctx->bufs[i].paddr = dma;
 		ctx->bufs[i].len = len;
-		ctx->bufs[i].cookie = 1;
+		ctx->bufs[i].cookie = F_MAPPED_AS_PAGE;
 	}
 	ctx->num_bufs = i;
 	txq->tx_free_bufs -= i;
@@ -1149,9 +1144,9 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 
 			if (i == 0) {
 				skb = (struct sk_buff *)
-					(txb->cookie & (~0x1));
+					(txb->cookie & (~F_MAPPED_AS_PAGE));
 			}
-			if (txb->cookie & 0x1) {
+			if (txb->cookie & F_MAPPED_AS_PAGE) {
 				dma_unmap_page(dev, txb->paddr,
 						txb->len, DMA_TO_DEVICE);
 			} else {
