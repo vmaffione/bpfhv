@@ -67,6 +67,9 @@ struct bpfhv_info {
 	/* Variable needed to use netif logging macros (netif_info,
 	 * netif_err, etc.). */
 	int				msg_enable;
+
+	/* Name of the program upgrade interrupt. */
+	char				upgrade_irq_name[64];
 };
 
 struct bpfhv_rxq {
@@ -132,6 +135,7 @@ static void		bpfhv_remove(struct pci_dev *pdev);
 static void		bpfhv_shutdown(struct pci_dev *pdev);
 static int		bpfhv_irqs_setup(struct bpfhv_info *bi);
 static void		bpfhv_irqs_teardown(struct bpfhv_info *bi);
+static irqreturn_t	bpfhv_upgrade_intr(int irq, void *data);
 static irqreturn_t	bpfhv_rx_intr(int irq, void *data);
 static irqreturn_t	bpfhv_tx_intr(int irq, void *data);
 static int		bpfhv_programs_setup(struct bpfhv_info *bi);
@@ -386,18 +390,20 @@ bpfhv_shutdown(struct pci_dev *pdev)
 static int bpfhv_irqs_setup(struct bpfhv_info *bi)
 {
 	const size_t num_queues = bi->num_rx_queues + bi->num_tx_queues;
+	int num_intrs = num_queues + 1;
 	int ret = 0;
 	int i;
 
 	/* Allocate the MSI-X interrupt vectors we need. */
-	ret = pci_alloc_irq_vectors(bi->pdev, num_queues, num_queues,
+	ret = pci_alloc_irq_vectors(bi->pdev, num_intrs, num_intrs,
 				    PCI_IRQ_MSIX);
-	if (ret != num_queues) {
+	if (ret != num_intrs) {
 		netif_err(bi, probe, bi->netdev,
 			"Failed to enable msix vectors (%d)\n", ret);
 		return ret;
 	}
 
+	/* Setup transmit and receive per-queue interrupts. */
 	for (i = 0; i < num_queues; i++) {
 		unsigned int vector = pci_irq_vector(bi->pdev, i);
 		irq_handler_t handler = NULL;
@@ -421,11 +427,30 @@ static int bpfhv_irqs_setup(struct bpfhv_info *bi)
 		ret = request_irq(vector, handler, 0, irq_name, q);
 		if (ret) {
 			netif_err(bi, probe, bi->netdev,
-				"Unable to allocate interrupt (%d)\n", ret);
+				"Unable to allocate queue interrupt (%d)\n",
+				ret);
 			goto err_irqs;
 		}
 		netif_info(bi, intr, bi->netdev,
-			"bpfhv: IRQ for queue #%d --> %u\n", i, vector);
+			"IRQ %u for queue #%d\n", vector, i);
+	}
+
+	/* Setup program upgrade interrupt. */
+	{
+		unsigned int vector = pci_irq_vector(bi->pdev, num_intrs - 1);
+
+		snprintf(bi->upgrade_irq_name, sizeof(bi->upgrade_irq_name),
+				"%s-u", bi->netdev->name);
+		ret = request_irq(vector, bpfhv_upgrade_intr, 0,
+					bi->upgrade_irq_name, bi);
+		if (ret) {
+			netif_err(bi, probe, bi->netdev,
+				"Unable to allocate upgrade interrupt (%d)\n",
+				ret);
+			goto err_irqs;
+		}
+		netif_info(bi, intr, bi->netdev, "IRQ %u for upgrade\n",
+				vector);
 	}
 
 	return 0;
@@ -451,6 +476,7 @@ static void bpfhv_irqs_teardown(struct bpfhv_info *bi)
 	const size_t num_queues = bi->num_rx_queues + bi->num_tx_queues;
 	int i;
 
+	free_irq(pci_irq_vector(bi->pdev, num_queues), bi);
 	for (i = 0; i < num_queues; i++) {
 		void *q = NULL;
 
@@ -463,6 +489,16 @@ static void bpfhv_irqs_teardown(struct bpfhv_info *bi)
 	}
 
 	pci_free_irq_vectors(bi->pdev);
+}
+
+static irqreturn_t
+bpfhv_upgrade_intr(int irq, void *data)
+{
+	struct bpfhv_info *bi = data;
+
+	netif_info(bi, drv, bi->netdev, "Program upgrade\n");
+
+	return IRQ_HANDLED;
 }
 
 static irqreturn_t
