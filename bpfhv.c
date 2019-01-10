@@ -969,8 +969,21 @@ bpfhv_resources_dealloc(struct bpfhv_info *bi)
 	 * operation must be disabled in the device at this point. */
 	for (i = 0; i < bi->num_tx_queues; i++) {
 		struct bpfhv_txq *txq = bi->txqs + i;
+		int ret;
 
-		(void)txq;
+		ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_RECLAIM],
+					/*ctx=*/txq->ctx);
+		if (ret == 0) {
+			/* No more completed transmissions. */
+			break;
+		}
+		if (unlikely(ret < 0)) {
+			netif_err(bi, tx_err, bi->netdev,
+				"txr() failed --> %d\n", ret);
+			break;
+		}
+
+		bpfhv_tx_ctx_clean(txq);
 	}
 
 	/* Drain the unused buffers in the receive queues. Receive operation
@@ -1132,7 +1145,7 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 		}
 		if (unlikely(ret < 0)) {
 			netif_err(bi, tx_err, bi->netdev,
-				"tcx() failed --> %d\n", ret);
+				"txc() failed --> %d\n", ret);
 			break;
 		}
 
@@ -1145,7 +1158,7 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 	}
 }
 
-/* To be called on successful return of "txc" or "txr". */
+/* This function must be called only on successful return of "txc" or "txr". */
 static void
 bpfhv_tx_ctx_clean(struct bpfhv_txq *txq)
 {
