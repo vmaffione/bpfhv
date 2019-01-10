@@ -47,7 +47,7 @@ struct bpfhv_info {
 
 	struct net_device		*netdev;
 
-	/* Transmit and receive programs (publish and completion). */
+	/* Transmit and receive programs (publish, completion and reclaim). */
 	struct bpf_prog			*progs[BPFHV_PROG_MAX];
 
 	/* Transmit and receive queues. */
@@ -590,14 +590,18 @@ static const char *
 progname_from_idx(unsigned int prog_idx)
 {
 	switch (prog_idx) {
-	case BPFHV_PROG_TX_PUBLISH:
-		return "txp";
-	case BPFHV_PROG_TX_COMPLETE:
-		return "txc";
 	case BPFHV_PROG_RX_PUBLISH:
 		return "rxp";
 	case BPFHV_PROG_RX_COMPLETE:
 		return "rxc";
+	case BPFHV_PROG_RX_RECLAIM:
+		return "rxr";
+	case BPFHV_PROG_TX_PUBLISH:
+		return "txp";
+	case BPFHV_PROG_TX_COMPLETE:
+		return "txc";
+	case BPFHV_PROG_TX_RECLAIM:
+		return "txr";
 	default:
 		break;
 	}
