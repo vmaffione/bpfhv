@@ -969,10 +969,12 @@ bpfhv_close(struct net_device *netdev)
 	/* Disable transmit and receive in the hardware. */
 	iowrite32(0, bi->ioaddr + BPFHV_IO_CTRL);
 
+	/* Disable NAPI. */
 	for (i = 0; i < bi->num_rx_queues; i++) {
 		struct bpfhv_rxq *rxq = bi->rxqs + i;
 
 		napi_disable(&rxq->napi);
+
 	}
 
 	for (i = 0; i < bi->num_tx_queues; i++) {
@@ -991,6 +993,8 @@ bpfhv_resources_dealloc(struct bpfhv_info *bi)
 {
 	int i;
 
+	/* Drain the unused buffers in the transmit queues. Transmit
+	 * operation must be disabled in the device at this point. */
 	for (i = 0; i < bi->num_tx_queues; i++) {
 		struct bpfhv_txq *txq = bi->txqs + i;
 
@@ -998,6 +1002,47 @@ bpfhv_resources_dealloc(struct bpfhv_info *bi)
 			kfree(txq->info);
 			txq->info = NULL;
 		}
+	}
+
+	/* Drain the unused buffers in the receive queues. Receive operation
+	 * must be disabled in the device at this point. */
+	for (i = 0; i < bi->num_rx_queues; i++) {
+		struct bpfhv_rxq *rxq = bi->rxqs + i;
+		struct bpfhv_rx_context *ctx = rxq->ctx;
+
+		for (;;) {
+			int ret;
+			int j;
+
+			ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_RX_RECLAIM],
+					/*ctx=*/ctx);
+			if (ret == 0) {
+				/* No more buffers to reclaim. */
+				break;
+			}
+
+			if (ret < 0) {
+				netif_err(bi, rx_err, bi->netdev,
+					"rxr() failed --> %d\n", ret);
+				break;
+			}
+
+			for (j = 0; j < ctx->num_bufs; j++) {
+				struct bpfhv_rx_buf *rxb = ctx->bufs + j;
+				void *kbuf = (void *)rxb->cookie;
+
+				BUG_ON(kbuf == NULL);
+				dma_unmap_single(bi->dev,
+						(dma_addr_t)rxb->paddr,
+						rxb->len, DMA_FROM_DEVICE);
+				kfree(kbuf);
+			}
+
+			rxq->rx_free_bufs += ctx->num_bufs;
+			netif_info(bi, drv, bi->netdev,
+				"rxr() --> %u packets\n", ctx->num_bufs);
+		}
+		BUG_ON(rxq->rx_free_bufs != bi->rx_bufs);
 	}
 }
 
