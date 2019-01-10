@@ -31,6 +31,7 @@
 #endif /* !__KERNEL__ */
 
 struct bpfhv_tx_buf {
+	uint64_t cookie;
 	uint64_t paddr;
 	uint32_t len;
 	uint32_t reserved;
@@ -53,7 +54,6 @@ struct bpfhv_tx_context {
 	 * On completion, 'cookie' and 'oflags' are output arguments, while
 	 * all the other fields are invalid.
 	 */
-	uint64_t		cookie;
 #define BPFHV_MAX_TX_BUFS		64
         struct bpfhv_tx_buf	bufs[BPFHV_MAX_TX_BUFS];
 	uint32_t		num_bufs;

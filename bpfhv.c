@@ -92,15 +92,6 @@ struct bpfhv_rxq {
 
 };
 
-/* Information associated to a pending transmit buffer. */
-struct bpfhv_tx_info {
-	struct sk_buff	*skb;
-	dma_addr_t	dma;
-	uint32_t	len;
-	int16_t		eop;
-	int16_t		mapped_page;
-};
-
 struct bpfhv_txq {
 	struct bpfhv_info		*bi;
 
@@ -114,15 +105,6 @@ struct bpfhv_txq {
 	/* Address of the doorbell to be used for guest-->hv notifications
 	 * on this queue. */
 	u32* __iomem			doorbell;
-
-	/* Array to associate data to each published (but incomplete)
-	 * buffer. The 'info_ntu' field (next to use) is an index in
-	 * the array that points to the next slot to be used. This
-	 * works assuming that the hypervisor does not process packets
-	 * out of order. In the future we need to support out of order
-	 * by implementing a free-list within the array. */
-	struct bpfhv_tx_info		*info;
-	unsigned int			info_ntu;
 
 	struct napi_struct		napi;
 
@@ -946,17 +928,6 @@ bpfhv_resources_alloc(struct bpfhv_info *bi)
 		}
 	}
 
-	for (i = 0; i < bi->num_tx_queues; i++) {
-		struct bpfhv_txq *txq = bi->txqs + i;
-
-		txq->info = kzalloc(sizeof(txq->info[0]) * bi->tx_bufs,
-					GFP_KERNEL);
-		if (txq->info == NULL) {
-			return -ENOMEM;
-		}
-		txq->info_ntu = 0;
-	}
-
 	return 0;
 }
 
@@ -998,10 +969,7 @@ bpfhv_resources_dealloc(struct bpfhv_info *bi)
 	for (i = 0; i < bi->num_tx_queues; i++) {
 		struct bpfhv_txq *txq = bi->txqs + i;
 
-		if (txq->info) {
-			kfree(txq->info);
-			txq->info = NULL;
-		}
+		(void)txq;
 	}
 
 	/* Drain the unused buffers in the receive queues. Receive operation
@@ -1060,9 +1028,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	struct bpfhv_txq *txq = bi->txqs + 0;
 	struct bpfhv_tx_context *ctx = txq->ctx;
 	unsigned int len = skb_headlen(skb);
-	unsigned int ntu = txq->info_ntu;
 	struct device *dev = bi->dev;
-	struct bpfhv_tx_info *info;
 	unsigned int nr_frags;
 	unsigned int i;
 	unsigned int f;
@@ -1080,7 +1046,6 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	}
 
 	/* Prepare the input arguments for the txp program. */
-	ctx->cookie = ntu;
 
 	/* Linear part. */
 	dma = dma_map_single(dev, skb->data, len, DMA_TO_DEVICE);
@@ -1090,14 +1055,8 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	}
 	ctx->bufs[0].paddr = dma;
 	ctx->bufs[0].len = len;
+	ctx->bufs[0].cookie = ((uintptr_t)skb) | 0;
 	i = 1;
-	info = txq->info + ntu;
-	info->dma = dma;
-	info->len = len;
-	info->skb = skb;
-	info->eop = (nr_frags == 0);
-	info->mapped_page = 0;
-	TX_INFO_IDX_INC(bi, ntu);
 
 	for (f = 0; f < nr_frags; f++, i++) {
 		struct skb_frag_struct *frag;
@@ -1109,17 +1068,14 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 				frag->page_offset, len, DMA_TO_DEVICE);
 		if (unlikely(dma_mapping_error(dev, dma))) {
 			for (i--; i >= 0; i--) {
-				if (ntu == 0) {
-					ntu = bi->tx_bufs;
-				}
-				ntu--;
-				info = txq->info + ntu;
-				if (info->mapped_page) {
-					dma_unmap_page(dev, info->dma,
-							info->len, DMA_TO_DEVICE);
+				struct bpfhv_tx_buf *txb = ctx->bufs + i;
+
+				if (txb->cookie & 0x1) {
+					dma_unmap_page(dev, txb->paddr,
+							txb->len, DMA_TO_DEVICE);
 				} else {
-					dma_unmap_single(dev, info->dma,
-							info->len, DMA_TO_DEVICE);
+					dma_unmap_single(dev, txb->paddr,
+							txb->len, DMA_TO_DEVICE);
 				}
 			}
 			dev_kfree_skb_any(skb);
@@ -1127,17 +1083,10 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		}
 		ctx->bufs[i].paddr = dma;
 		ctx->bufs[i].len = len;
-		info = txq->info + ntu;
-		info->dma = dma;
-		info->len = len;
-		info->skb = NULL;
-		info->eop = (f == nr_frags - 1);
-		info->mapped_page = 1;
-		TX_INFO_IDX_INC(bi, ntu);
+		ctx->bufs[i].cookie = 1;
 	}
 	ctx->num_bufs = i;
 	txq->tx_free_bufs -= i;
-	txq->info_ntu = ntu;
 
 	ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_PUBLISH], /*ctx=*/ctx);
 	netif_info(bi, tx_queued, bi->netdev,
@@ -1179,10 +1128,9 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 	unsigned int count;
 
 	for (count = 0;; count++) {
-		struct bpfhv_tx_info *info;
-		unsigned int ntc;
-		struct sk_buff *skb;
+		struct sk_buff *skb = NULL;
 		int ret;
+		int i;
 
 		ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_COMPLETE],
 					/*ctx=*/ctx);
@@ -1196,23 +1144,22 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 			break;
 		}
 
-		ntc = (unsigned int)ctx->cookie;
-		info = txq->info + ntc;
-		skb = info->skb;
-		for (;;) {
-			if (info->mapped_page) {
-				dma_unmap_page(dev, info->dma,
-						info->len, DMA_TO_DEVICE);
+		for (i = 0; i < ctx->num_bufs; i++) {
+			struct bpfhv_tx_buf *txb = ctx->bufs + i;
+
+			if (i == 0) {
+				skb = (struct sk_buff *)
+					(txb->cookie & (~0x1));
+			}
+			if (txb->cookie & 0x1) {
+				dma_unmap_page(dev, txb->paddr,
+						txb->len, DMA_TO_DEVICE);
 			} else {
-				dma_unmap_single(dev, info->dma,
-						info->len, DMA_TO_DEVICE);
+				dma_unmap_single(dev, txb->paddr,
+						txb->len, DMA_TO_DEVICE);
 			}
-			if (info->eop) {
-				break;
-			}
-			TX_INFO_IDX_INC(bi, ntc);
-			info = txq->info + ntc;
 		}
+		BUG_ON(!skb);
 		dev_kfree_skb_any(skb);
 	}
 
