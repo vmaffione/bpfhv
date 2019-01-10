@@ -1154,6 +1154,7 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 						txb->len, DMA_TO_DEVICE);
 			}
 		}
+		txq->tx_free_bufs += ctx->num_bufs;
 		BUG_ON(!skb);
 		dev_kfree_skb_any(skb);
 	}
@@ -1161,7 +1162,6 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 	if (count) {
 		netif_info(bi, tx_done, bi->netdev,
 			"txc() --> %d packets\n", count);
-		txq->tx_free_bufs += count;
 	}
 }
 
