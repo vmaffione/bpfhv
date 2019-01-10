@@ -969,21 +969,28 @@ bpfhv_resources_dealloc(struct bpfhv_info *bi)
 	 * operation must be disabled in the device at this point. */
 	for (i = 0; i < bi->num_tx_queues; i++) {
 		struct bpfhv_txq *txq = bi->txqs + i;
-		int ret;
 
-		ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_RECLAIM],
-					/*ctx=*/txq->ctx);
-		if (ret == 0) {
-			/* No more completed transmissions. */
-			break;
-		}
-		if (unlikely(ret < 0)) {
-			netif_err(bi, tx_err, bi->netdev,
-				"txr() failed --> %d\n", ret);
-			break;
+		for (;;) {
+			int ret;
+
+			ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_RECLAIM],
+						/*ctx=*/txq->ctx);
+			if (ret == 0) {
+				/* No more completed transmissions. */
+				break;
+			}
+			if (unlikely(ret < 0)) {
+				netif_err(bi, tx_err, bi->netdev,
+					"txr() failed --> %d\n", ret);
+				break;
+			}
+
+			bpfhv_tx_ctx_clean(txq);
+			netif_info(bi, drv, bi->netdev,
+				"txr() --> %u packets\n", txq->ctx->num_bufs);
 		}
 
-		bpfhv_tx_ctx_clean(txq);
+		BUG_ON(txq->tx_free_bufs != bi->tx_bufs);
 	}
 
 	/* Drain the unused buffers in the receive queues. Receive operation
@@ -1024,6 +1031,7 @@ bpfhv_resources_dealloc(struct bpfhv_info *bi)
 			netif_info(bi, drv, bi->netdev,
 				"rxr() --> %u packets\n", ctx->num_bufs);
 		}
+
 		BUG_ON(rxq->rx_free_bufs != bi->rx_bufs);
 	}
 }
