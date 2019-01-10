@@ -138,6 +138,7 @@ static netdev_tx_t	bpfhv_start_xmit(struct sk_buff *skb,
 					struct net_device *netdev);
 static int		bpfhv_tx_poll(struct napi_struct *napi, int budget);
 static void		bpfhv_tx_clean(struct bpfhv_txq *txq);
+static void		bpfhv_tx_ctx_clean(struct bpfhv_txq *txq);
 static int		bpfhv_rx_refill(struct bpfhv_rxq *rxq);
 static int		bpfhv_rx_poll(struct napi_struct *napi, int budget);
 static struct net_device_stats *bpfhv_get_stats(struct net_device *netdev);
@@ -1117,18 +1118,14 @@ bpfhv_tx_poll(struct napi_struct *napi, int budget)
 static void
 bpfhv_tx_clean(struct bpfhv_txq *txq)
 {
-	struct bpfhv_tx_context *ctx = txq->ctx;
 	struct bpfhv_info *bi = txq->bi;
-	struct device *dev = bi->dev;
 	unsigned int count;
 
 	for (count = 0;; count++) {
-		struct sk_buff *skb = NULL;
 		int ret;
-		int i;
 
 		ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_COMPLETE],
-					/*ctx=*/ctx);
+					/*ctx=*/txq->ctx);
 		if (ret == 0) {
 			/* No more completed transmissions. */
 			break;
@@ -1139,30 +1136,44 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 			break;
 		}
 
-		for (i = 0; i < ctx->num_bufs; i++) {
-			struct bpfhv_tx_buf *txb = ctx->bufs + i;
-
-			if (i == 0) {
-				skb = (struct sk_buff *)
-					(txb->cookie & (~F_MAPPED_AS_PAGE));
-			}
-			if (txb->cookie & F_MAPPED_AS_PAGE) {
-				dma_unmap_page(dev, txb->paddr,
-						txb->len, DMA_TO_DEVICE);
-			} else {
-				dma_unmap_single(dev, txb->paddr,
-						txb->len, DMA_TO_DEVICE);
-			}
-		}
-		txq->tx_free_bufs += ctx->num_bufs;
-		BUG_ON(!skb);
-		dev_kfree_skb_any(skb);
+		bpfhv_tx_ctx_clean(txq);
 	}
 
 	if (count) {
 		netif_info(bi, tx_done, bi->netdev,
 			"txc() --> %d packets\n", count);
 	}
+}
+
+/* To be called on successful return of "txc" or "txr". */
+static void
+bpfhv_tx_ctx_clean(struct bpfhv_txq *txq)
+{
+	struct bpfhv_tx_context *ctx = txq->ctx;
+	struct bpfhv_info *bi = txq->bi;
+	struct device *dev = bi->dev;
+	struct sk_buff *skb = NULL;
+	int i;
+
+	for (i = 0; i < ctx->num_bufs; i++) {
+		struct bpfhv_tx_buf *txb = ctx->bufs + i;
+
+		if (i == 0) {
+			skb = (struct sk_buff *)
+				(txb->cookie & (~F_MAPPED_AS_PAGE));
+		}
+		if (txb->cookie & F_MAPPED_AS_PAGE) {
+			dma_unmap_page(dev, txb->paddr,
+					txb->len, DMA_TO_DEVICE);
+		} else {
+			dma_unmap_single(dev, txb->paddr,
+					txb->len, DMA_TO_DEVICE);
+		}
+	}
+	txq->tx_free_bufs += ctx->num_bufs;
+
+	BUG_ON(!skb);
+	dev_kfree_skb_any(skb);
 }
 
 static int
