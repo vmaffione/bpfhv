@@ -8,8 +8,7 @@ Some goals:
           problems.
 
 TODO (driver):
-	- Two more programs to reclaim pending buffers (only
-	  when the device is stopped).
+	- dynamic program upgrade
 
 TODO (qemu):
         - Replace cpu_physical_memory_[un]map() with dma_memory_[un]map()

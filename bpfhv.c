@@ -70,6 +70,7 @@ struct bpfhv_info {
 
 	/* Name of the program upgrade interrupt. */
 	char				upgrade_irq_name[64];
+	struct work_struct		upgrade_work;
 };
 
 struct bpfhv_rxq {
@@ -118,6 +119,7 @@ static void		bpfhv_shutdown(struct pci_dev *pdev);
 static int		bpfhv_irqs_setup(struct bpfhv_info *bi);
 static void		bpfhv_irqs_teardown(struct bpfhv_info *bi);
 static irqreturn_t	bpfhv_upgrade_intr(int irq, void *data);
+static void		bpfhv_upgrade(struct work_struct *w);
 static irqreturn_t	bpfhv_rx_intr(int irq, void *data);
 static irqreturn_t	bpfhv_tx_intr(int irq, void *data);
 static int		bpfhv_programs_setup(struct bpfhv_info *bi);
@@ -248,6 +250,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	bi->num_rx_queues = num_rx_queues;
 	bi->num_tx_queues = num_tx_queues;
 	bi->msg_enable = netif_msg_init(debug, DEFAULT_MSG_ENABLE);
+	INIT_WORK(&bi->upgrade_work, bpfhv_upgrade);
 
 	bi->rxqs = (struct bpfhv_rxq *)(bi + 1);
 	bi->txqs = (struct bpfhv_txq *)(bi->rxqs + num_rx_queues);
@@ -352,6 +355,7 @@ bpfhv_remove(struct pci_dev *pdev)
 
 		netif_napi_del(&rxq->napi);
 	}
+	cancel_work_sync(&bi->upgrade_work);
 	bpfhv_irqs_teardown(bi);
 	unregister_netdev(netdev);
 	bpfhv_programs_teardown(bi);
@@ -479,9 +483,18 @@ bpfhv_upgrade_intr(int irq, void *data)
 {
 	struct bpfhv_info *bi = data;
 
-	netif_info(bi, drv, bi->netdev, "Program upgrade\n");
+	schedule_work(&bi->upgrade_work);
 
 	return IRQ_HANDLED;
+}
+
+static void
+bpfhv_upgrade(struct work_struct *w)
+{
+	struct bpfhv_info *bi = container_of(w, struct bpfhv_info,
+						upgrade_work);
+
+	netif_info(bi, drv, bi->netdev, "Program upgrade\n");
 }
 
 static irqreturn_t
