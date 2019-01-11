@@ -112,6 +112,8 @@ struct bpfhv_txq {
 	 * on this queue. */
 	u32* __iomem			doorbell;
 
+	unsigned int			idx;
+
 	struct napi_struct		napi;
 
 	char irq_name[64];
@@ -305,6 +307,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		struct bpfhv_txq *txq = bi->txqs + i;
 
 		txq->bi = bi;
+		txq->idx = i;
 		netif_napi_add(netdev, &txq->napi, bpfhv_tx_poll,
 				NAPI_POLL_WEIGHT);
 		txq->doorbell = (u32* __iomem)(dbmmio_addr +
@@ -1210,6 +1213,11 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_PUBLISH], /*ctx=*/ctx);
 	netif_info(bi, tx_queued, bi->netdev,
 		"txp(%u bytes) --> %d\n", skb->len, ret);
+
+	if (txq->tx_free_bufs < 2 + MAX_SKB_FRAGS) {
+		netif_stop_subqueue(netdev, txq->idx);
+		/* TODO double check */
+	}
 
 	if (!skb->xmit_more && (ctx->oflags & BPFHV_OFLAGS_NOTIF_NEEDED)) {
 		writel(0, txq->doorbell);
