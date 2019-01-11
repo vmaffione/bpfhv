@@ -975,6 +975,8 @@ bpfhv_open(struct net_device *netdev)
 	iowrite32(BPFHV_CTRL_RX_ENABLE | BPFHV_CTRL_TX_ENABLE,
 			bi->ioaddr + BPFHV_IO_CTRL);
 
+	netif_tx_start_all_queues(netdev);
+
 	return 0;
 }
 
