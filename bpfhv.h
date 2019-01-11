@@ -134,20 +134,34 @@ static void *BPFHV_FUNC(pkt_alloc, struct bpfhv_rx_context *ctx);
 #define BPFHV_PROG_PCI_BAR		3
 
 /*
- * Device status register:
- *   - bit 0: link status (ro): value is 0 if link is down, 1 if link is up
+ * Device status register (guest read only, hv read/write):
+ *   - bit 0: link status: value is 0 if link is down, 1 if link is up;
+ *   - bit 1: upgrade pending: value is 1 if a program upgrade is pending;
+ *   - bit 2: receive enabled: value is 1 if receive operation is enabled;
+ *   - bit 3: transmit enabled: value is 1 if transmit operation is enabled;
  */
 #define BPFHV_IO_STATUS			0
 #define		BPFHV_STATUS_LINK	(1 << 0)
+#define		BPFHV_STATUS_UPGRADE	(1 << 1)
+#define		BPFHV_STATUS_RX_ENABLED (1 << 2)
+#define		BPFHV_STATUS_TX_ENABLED (1 << 3)
 
 /*
- * Device control register:
- *   - bit 0: receive enable (wo): receive operation is enabled if set
- *   - bit 1: transmit enable (wo): transmit operation is enabled if set
+ * Device control register (guest read/write, hv read only):
+ *   - bit 0: receive enable: receive operation is enabled if set, and disabled
+ *            if reset; setting may fail if receove contexts are not valid
+ *   - bit 1: transmit enable: transmit operation is enabled if set, and
+ *            disabled if reset; setting may fail if transmit contexts are
+ *            not valid
+ *   - bit 2: upgrade ready: writing 1 this bit tells the hypervisor that the
+ *            guest is ready to proceed with the program upgrade; the
+ *            hypervisor will then load the new program in the program MMIO
+ *            and reset the BPFHV_STATUS_UPGRADE bit the status register;
  */
 #define BPFHV_IO_CTRL			4
-#define		BPFHV_CTRL_RX_ENABLE	(1 << 0)
-#define		BPFHV_CTRL_TX_ENABLE	(1 << 1)
+#define		BPFHV_CTRL_RX_ENABLE		(1 << 0)
+#define		BPFHV_CTRL_TX_ENABLE		(1 << 1)
+#define		BPFHV_CTRL_UPGRADE_READY	(1 << 2)
 
 /* Device MAC address: the least significant 32 bits of the address are taken
  * from MAC_LO, while the most significant 16 bits are taken from the least

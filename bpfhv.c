@@ -70,7 +70,12 @@ struct bpfhv_info {
 
 	/* Name of the program upgrade interrupt. */
 	char				upgrade_irq_name[64];
+
 	struct work_struct		upgrade_work;
+
+	/* True if we failed to upgrade the program from the hypervisor.
+	 * This situation renders the device unusable. */
+	bool				broken;
 };
 
 struct bpfhv_rxq {
@@ -251,6 +256,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	bi->num_tx_queues = num_tx_queues;
 	bi->msg_enable = netif_msg_init(debug, DEFAULT_MSG_ENABLE);
 	INIT_WORK(&bi->upgrade_work, bpfhv_upgrade);
+	bi->broken = false;
 
 	bi->rxqs = (struct bpfhv_rxq *)(bi + 1);
 	bi->txqs = (struct bpfhv_txq *)(bi->rxqs + num_rx_queues);
@@ -493,8 +499,49 @@ bpfhv_upgrade(struct work_struct *w)
 {
 	struct bpfhv_info *bi = container_of(w, struct bpfhv_info,
 						upgrade_work);
+	uint32_t status = ioread32(bi->ioaddr + BPFHV_IO_STATUS);
+	uint32_t ctrl;
+	int ret;
 
+	if (!(status & BPFHV_STATUS_UPGRADE)) {
+		return; /* nothing to do */
+	}
 	netif_info(bi, drv, bi->netdev, "Program upgrade\n");
+
+	/* Stop all transmit queues (locked version of
+	 * netif_tx_stop_all_queues()). */
+	netif_tx_disable(bi->netdev);
+
+	rtnl_lock();
+
+	/* Disable transmit and receive in the hardware, disable
+	 * NAPI and release the allocated resources. */
+	if (netif_running(bi->netdev)) {
+		bpfhv_close(bi->netdev);
+	}
+
+	/* Tell the hypervisor that we are ready to proceed with
+	 * the upgrade. */
+	ctrl = ioread32(bi->ioaddr + BPFHV_IO_CTRL);
+	iowrite32(ctrl | BPFHV_CTRL_UPGRADE_READY,
+			bi->ioaddr + BPFHV_IO_CTRL);
+
+	/* Do the upgrade. */
+	ret = bpfhv_programs_setup(bi);
+	if (ret) {
+		netif_err(bi, drv, bi->netdev,
+			"Program upgrade failed: %d\n", ret);
+		bi->broken = true;
+		rtnl_unlock();
+		return;
+	}
+
+	bi->broken = false;
+
+	if (netif_running(bi->netdev)) {
+		bpfhv_open(bi->netdev);
+	}
+	rtnl_unlock();
 }
 
 static irqreturn_t
@@ -902,6 +949,10 @@ bpfhv_open(struct net_device *netdev)
 	int ret;
 	int i;
 
+	if (bi->broken) {
+		return -EIO;
+	}
+
 	ret = bpfhv_resources_alloc(bi);
 	if (ret) {
 		bpfhv_resources_dealloc(bi);
@@ -950,6 +1001,10 @@ bpfhv_close(struct net_device *netdev)
 {
 	struct bpfhv_info *bi = netdev_priv(netdev);
 	int i;
+
+	if (bi->broken) {
+		return 0;
+	}
 
 	/* Disable transmit and receive in the hardware. */
 	iowrite32(0, bi->ioaddr + BPFHV_IO_CTRL);
