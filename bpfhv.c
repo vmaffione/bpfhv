@@ -946,6 +946,7 @@ static int
 bpfhv_open(struct net_device *netdev)
 {
 	struct bpfhv_info *bi = netdev_priv(netdev);
+	uint32_t status;
 	int ret;
 	int i;
 
@@ -971,9 +972,24 @@ bpfhv_open(struct net_device *netdev)
 		napi_enable(&txq->napi);
 	}
 
-	/* Enable transmit and receive in the hardware. */
+	/* Enable transmit and receive in the hardware, and
+	 * check that the operation was successful. */
 	iowrite32(BPFHV_CTRL_RX_ENABLE | BPFHV_CTRL_TX_ENABLE,
 			bi->ioaddr + BPFHV_IO_CTRL);
+	status = ioread32(bi->ioaddr + BPFHV_IO_STATUS);
+	if ((status & (BPFHV_STATUS_RX_ENABLED | BPFHV_STATUS_TX_ENABLED))
+		!= (BPFHV_STATUS_RX_ENABLED | BPFHV_STATUS_TX_ENABLED)) {
+		if (!(status & BPFHV_STATUS_RX_ENABLED)) {
+			netif_err(bi, drv, netdev,
+				"Failed to enable receive operation\n");
+		}
+		if (!(status & BPFHV_STATUS_TX_ENABLED)) {
+			netif_err(bi, drv, netdev,
+				"Failed to enable transmit operation\n");
+		}
+		bpfhv_close(netdev);
+		return -EIO;
+	}
 
 	netif_tx_start_all_queues(netdev);
 
