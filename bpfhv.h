@@ -21,8 +21,8 @@
  */
 
 /*
- * When compiling from userspace include <stdint.h>,
- * when compiling from kernelspace include <linux/types.h>
+ * When compiling user-space code include <stdint.h>,
+ * when compiling kernel-space code include <linux/types.h>
  */
 #ifdef __KERNEL__
 #include <linux/types.h>
@@ -43,16 +43,22 @@ struct bpfhv_tx_context {
 	 * This field can be used by the helper functions. */
 	uint64_t		guest_priv;
 	/*
-	 * Array of physical addresses and lengths, representing a
-	 * scatter-gather buffer. The number of valid bufs is stored
-	 * in 'num_bufs'. Guest OS packet reference (e.g., pointer to sk_buff
-	 * or mbuf) can be stored in 'cookie'.
+	 * Array of buffer descriptors, representing a scatter-gather
+	 * buffer. The number of valid descriptors is stored in 'num_bufs'.
+	 * Each descriptor contains the guest physical address (GPA) of
+	 * a buffer ('paddr'), the buffer length in bytes ('len') and
+	 * a value private to the guest ('cookie'), that the guest can
+	 * use to match published buffers to completed ones.
 	 *
-	 * On publication, 'phys', 'len', 'cookie' and 'num_bufs'
-	 * are input argument for the eBPF program, and 'oflags' is
-	 * an output argument.
-	 * On completion, 'cookie' and 'oflags' are output arguments, while
-	 * all the other fields are invalid.
+	 * On publication, 'bufs' and 'num_bufs' are input argument for
+	 * the eBPF program, and 'oflags' is an output argument. The
+	 * BPFHV_OFLAGS_NOTIF_NEEDED bit is set if the guest is required
+	 * to notify the hypervisor.
+	 * On completion, 'bufs', 'num_bufs' and 'oflags' are output arguments.
+	 * The 'bufs' and 'num_bufs' argument contain information about the
+	 * packet that was successfully transmitted. Tha
+	 * BPFHV_OFLAGS_RESCHED_NEEDED flag is set if more completion events
+	 * are available.
 	 */
 #define BPFHV_MAX_TX_BUFS		64
         struct bpfhv_tx_buf	bufs[BPFHV_MAX_TX_BUFS];
@@ -79,20 +85,23 @@ struct bpfhv_rx_context {
 	 * This field can be used by the helper functions. */
 	uint64_t		guest_priv;
 	/*
-	 * Array of physical addresses and lengths, representing a set of
-	 * buffers. The number of valid bufs is stored in 'num_bufs'.
-	 * The buffer cookies can be used by the guest OS to identify the
-	 * buffers when building the OS packet (e.g. sk_buff or mbuf).
-	 * A reference to the OS packet can be stored in 'packet'.
+	 * Array of buffer descriptors, representing a list of independent
+	 * buffers to be used for packet reception.
+	 * The number of valid descriptors is stored in 'num_bufs'.
+	 * Each descriptor contains the guest physical address (GPA) of
+	 * a buffer ('paddr'), the buffer length in bytes ('len') and
+	 * a value private to the guest ('cookie'), that the guest can
+	 * use to match published buffers to completed ones.
 	 *
-	 * On publication, 'phys', 'len', 'buf_cookie' and 'num_bufs'
-	 * are input arguments for the eBPF program, the 'packet'
-	 * field is invalid, and 'oflags' is an output argument.
-	 * On receiving, 'packet' and 'oflags' are output arguments, with
-	 * 'packet' containing a pointer to a guest OS packet.
-	 * The OS packet allocated by the receive eBPF program by means of
-	 * a helper call.
-	 * All the other fields are invalid.
+	 * On publication, 'bufs' and 'num_bufs' are input argument for
+	 * the eBPF program, and 'oflags' is an output argument. The
+	 * BPFHV_OFLAGS_NOTIF_NEEDED bit is set if the guest is required
+	 * to notify the hypervisor.
+	 * On completion, 'bufs', 'num_bufs' and 'oflags' are output arguments.
+	 * The 'bufs' and 'num_bufs' argument contain the list of buffers that
+	 * were used to receive a packet. A pointer to the OS packet is
+	 * available in the 'packet' field. The OS packet allocated by the
+	 * receive eBPF program by means of a helper call.
 	 */
 	uint64_t		packet;
 #define BPFHV_MAX_RX_BUFS		64
