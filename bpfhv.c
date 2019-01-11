@@ -1055,6 +1055,7 @@ bpfhv_resources_dealloc(struct bpfhv_info *bi)
 	 * operation must be disabled in the device at this point. */
 	for (i = 0; i < bi->num_tx_queues; i++) {
 		struct bpfhv_txq *txq = bi->txqs + i;
+		unsigned int count = 0;
 
 		for (;;) {
 			int ret;
@@ -1072,10 +1073,13 @@ bpfhv_resources_dealloc(struct bpfhv_info *bi)
 			}
 
 			bpfhv_tx_ctx_clean(txq);
-			netif_info(bi, drv, bi->netdev,
-				"txr() --> %u packets\n", txq->ctx->num_bufs);
+			count += txq->ctx->num_bufs;
 		}
 
+		if (count) {
+			netif_info(bi, drv, bi->netdev,
+				"txr() --> %u packets\n", count);
+		}
 		if (txq->tx_free_bufs != bi->tx_bufs) {
 			netif_err(bi, drv, bi->netdev,
 				"%d transmit buffers not reclaimed\n",
@@ -1088,6 +1092,7 @@ bpfhv_resources_dealloc(struct bpfhv_info *bi)
 	for (i = 0; i < bi->num_rx_queues; i++) {
 		struct bpfhv_rxq *rxq = bi->rxqs + i;
 		struct bpfhv_rx_context *ctx = rxq->ctx;
+		unsigned int count = 0;
 
 		for (;;) {
 			int ret;
@@ -1118,10 +1123,13 @@ bpfhv_resources_dealloc(struct bpfhv_info *bi)
 			}
 
 			rxq->rx_free_bufs += ctx->num_bufs;
-			netif_info(bi, drv, bi->netdev,
-				"rxr() --> %u packets\n", ctx->num_bufs);
+			count += ctx->num_bufs;
 		}
 
+		if (count) {
+			netif_info(bi, drv, bi->netdev,
+				"rxr() --> %u packets\n", count);
+		}
 		if (rxq->rx_free_bufs != bi->rx_bufs) {
 			netif_err(bi, drv, bi->netdev,
 				"%d receive buffers not reclaimed\n",
