@@ -1076,7 +1076,11 @@ bpfhv_resources_dealloc(struct bpfhv_info *bi)
 				"txr() --> %u packets\n", txq->ctx->num_bufs);
 		}
 
-		BUG_ON(txq->tx_free_bufs != bi->tx_bufs);
+		if (txq->tx_free_bufs != bi->tx_bufs) {
+			netif_err(bi, drv, bi->netdev,
+				"%d transmit buffers not reclaimed\n",
+				(int)bi->tx_bufs - (int)txq->tx_free_bufs);
+		}
 	}
 
 	/* Drain the unused buffers in the receive queues. Receive operation
@@ -1118,7 +1122,11 @@ bpfhv_resources_dealloc(struct bpfhv_info *bi)
 				"rxr() --> %u packets\n", ctx->num_bufs);
 		}
 
-		BUG_ON(rxq->rx_free_bufs != bi->rx_bufs);
+		if (rxq->rx_free_bufs != bi->rx_bufs) {
+			netif_err(bi, drv, bi->netdev,
+				"%d receive buffers not reclaimed\n",
+				(int)bi->rx_bufs - (int)rxq->rx_free_bufs);
+		}
 	}
 }
 
