@@ -640,12 +640,16 @@ progname_from_idx(unsigned int prog_idx)
 		return "rxp";
 	case BPFHV_PROG_RX_COMPLETE:
 		return "rxc";
+	case BPFHV_PROG_RX_INTRS:
+		return "rxi";
 	case BPFHV_PROG_RX_RECLAIM:
 		return "rxr";
 	case BPFHV_PROG_TX_PUBLISH:
 		return "txp";
 	case BPFHV_PROG_TX_COMPLETE:
 		return "txc";
+	case BPFHV_PROG_TX_INTRS:
+		return "txi";
 	case BPFHV_PROG_TX_RECLAIM:
 		return "txr";
 	default:
@@ -812,6 +816,7 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		memset(rxq->ctx, 0, bi->rx_ctx_size);
 		rxq->rx_free_bufs = bi->rx_bufs;
 		rxq->ctx->guest_priv = (uintptr_t)rxq;
+		rxq->ctx->min_completed_bufs = 1;
 		ctx_paddr_write(bi, i, rxq->ctx_dma);
 	}
 
@@ -826,7 +831,7 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		memset(txq->ctx, 0, bi->tx_ctx_size);
 		txq->tx_free_bufs = bi->tx_bufs;
 		txq->ctx->guest_priv = (uintptr_t)txq;
-		txq->ctx->min_free_bufs = 2 + MAX_SKB_FRAGS;
+		txq->ctx->min_completed_bufs = 2 + MAX_SKB_FRAGS;
 		ctx_paddr_write(bi, bi->num_rx_queues + i, txq->ctx_dma);
 	}
 

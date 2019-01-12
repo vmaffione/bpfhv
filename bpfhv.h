@@ -66,7 +66,7 @@ struct bpfhv_tx_context {
 	uint32_t		oflags;
 #define BPFHV_OFLAGS_NOTIF_NEEDED	(1 << 0)
 #define BPFHV_OFLAGS_RESCHED_NEEDED	(1 << 1)
-	uint32_t		min_free_bufs;
+	uint32_t		min_completed_bufs;
 	uint32_t		pad[13];
 
 	/* Private hv-side context follows here. */
@@ -109,7 +109,8 @@ struct bpfhv_rx_context {
 	struct bpfhv_rx_buf	bufs[BPFHV_MAX_RX_BUFS];
 	uint32_t		num_bufs;
 	uint32_t		oflags;
-	uint32_t		pad[14];
+	uint32_t		min_completed_bufs;
+	uint32_t		pad[13];
 
 	/* Private hv-side context follows here. */
 	char			opaque[0];
@@ -224,9 +225,11 @@ enum {
 	BPFHV_PROG_NONE = 0,
 	BPFHV_PROG_RX_PUBLISH,
 	BPFHV_PROG_RX_COMPLETE,
+	BPFHV_PROG_RX_INTRS,
 	BPFHV_PROG_RX_RECLAIM,
 	BPFHV_PROG_TX_PUBLISH,
 	BPFHV_PROG_TX_COMPLETE,
+	BPFHV_PROG_TX_INTRS,
 	BPFHV_PROG_TX_RECLAIM,
 	BPFHV_PROG_MAX,
 };
