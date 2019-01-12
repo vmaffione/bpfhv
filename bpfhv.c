@@ -1167,6 +1167,8 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		return NETDEV_TX_BUSY;
 	}
 
+	skb_tx_timestamp(skb);
+
 	/* Prepare the input arguments for the txp program. */
 
 	/* Linear part. */
