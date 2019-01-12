@@ -1381,16 +1381,29 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 	struct bpfhv_rxq *rxq = container_of(napi, struct bpfhv_rxq, napi);
 	struct bpfhv_rx_context *ctx = rxq->ctx;
 	struct bpfhv_info *bi = rxq->bi;
+	bool more = true;
 	int count;
 
-	for (count = 0; count < budget; count++) {
+	/* Disable interrupts. */
+	ctx->min_completed_bufs = 0;
+	BPF_PROG_RUN(bi->progs[BPFHV_PROG_RX_INTRS], ctx);
+
+	for (count = 0; count < budget; ) {
 		struct sk_buff *skb;
 		int ret;
 
 		ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_RX_COMPLETE],
 					/*ctx=*/ctx);
 		if (ret == 0) {
-			/* No more received packets. */
+			/* No more received packets. Enable interrupts. */
+			ctx->min_completed_bufs = 1;
+			more = BPF_PROG_RUN(bi->progs[BPFHV_PROG_RX_INTRS],
+						ctx);
+			if (unlikely(more)) {
+				/* More buffers were found, thus we keep
+				 * going. */
+				continue;
+			}
 			break;
 		}
 		if (unlikely(ret < 0)) {
@@ -1399,6 +1412,7 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 			break;
 		}
 		rxq->rx_free_bufs++;
+		count++;
 
 		skb = (struct sk_buff *)ctx->packet;
 		if (unlikely(!skb)) {
@@ -1409,20 +1423,21 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 
 		skb->protocol = eth_type_trans(skb, bi->netdev);
 		netif_receive_skb(skb);
-
 		if (rxq->rx_free_bufs >= 16) {
 			bpfhv_rx_refill(rxq);
 		}
 	}
 
-	napi_complete(napi);
+	if (!more) {
+		napi_complete(napi);
+	}
 
 	if (count > 0) {
 		netif_info(bi, rx_status, bi->netdev,
 			"rxc() --> %d packets\n", count);
 	}
 
-	return 0;
+	return count;
 }
 
 static struct net_device_stats *
