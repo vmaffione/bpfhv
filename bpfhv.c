@@ -1157,6 +1157,10 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	dma_addr_t dma;
 	int ret;
 
+	/* Opportunistically free completed packets before queueing a new
+	 * one. */
+	bpfhv_tx_clean(txq);
+
 	nr_frags = skb_shinfo(skb)->nr_frags;
 	if (unlikely(nr_frags + 1 > BPFHV_MAX_TX_BUFS)) {
 		dev_kfree_skb_any(skb);
@@ -1218,7 +1222,6 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 
 	if (txq->tx_free_bufs < 2 + MAX_SKB_FRAGS) {
 		netif_stop_subqueue(netdev, txq->idx);
-		/* TODO double check */
 	}
 
 	if (!skb->xmit_more && (ctx->oflags & BPFHV_OFLAGS_NOTIF_NEEDED)) {
