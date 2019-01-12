@@ -66,7 +66,8 @@ struct bpfhv_tx_context {
 	uint32_t		oflags;
 #define BPFHV_OFLAGS_NOTIF_NEEDED	(1 << 0)
 #define BPFHV_OFLAGS_RESCHED_NEEDED	(1 << 1)
-	uint32_t		pad[14];
+	uint32_t		min_free_bufs;
+	uint32_t		pad[13];
 
 	/* Private hv-side context follows here. */
 	char			opaque[0];
