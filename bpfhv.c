@@ -831,7 +831,7 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		memset(txq->ctx, 0, bi->tx_ctx_size);
 		txq->tx_free_bufs = bi->tx_bufs;
 		txq->ctx->guest_priv = (uintptr_t)txq;
-		txq->ctx->min_completed_bufs = 2 + MAX_SKB_FRAGS;
+		txq->ctx->min_free_bufs = 2 + MAX_SKB_FRAGS;
 		ctx_paddr_write(bi, bi->num_rx_queues + i, txq->ctx_dma);
 	}
 
