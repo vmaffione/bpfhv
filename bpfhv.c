@@ -1272,7 +1272,7 @@ bpfhv_tx_poll(struct napi_struct *napi, int budget)
 	struct bpfhv_info *bi = txq->bi;
 	struct netdev_queue *q =
 		netdev_get_tx_queue(bi->netdev, txq - bi->txqs);
-	bool wakeup;
+	bool wakeup, more;
 
 	__netif_tx_lock(q, raw_smp_processor_id());
 
@@ -1283,13 +1283,18 @@ bpfhv_tx_poll(struct napi_struct *napi, int budget)
 	bpfhv_tx_clean(txq);
 	wakeup = (txq->tx_free_bufs >= 2 + MAX_SKB_FRAGS);
 
-	/* Enable interrupts. */
+	/* Enable interrupts and complete NAPI. */
 	ctx->min_completed_bufs = 1;
-	BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_INTRS], ctx);
+	more = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_INTRS], ctx);
 
 	__netif_tx_unlock(q);
 
 	napi_complete(napi);
+
+	if (unlikely(more)) {
+		/* Reschedule, as more work came in the meanwhile. */
+		napi_schedule(napi);
+	}
 
 	if (wakeup) {
 		netif_tx_wake_queue(q);
@@ -1431,22 +1436,14 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 	ctx->min_completed_bufs = 0;
 	BPF_PROG_RUN(bi->progs[BPFHV_PROG_RX_INTRS], ctx);
 
-	for (count = 0; count < budget; ) {
+	for (count = 0; count < budget; count++) {
 		struct sk_buff *skb;
 		int ret;
 
 		ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_RX_COMPLETE],
 					/*ctx=*/ctx);
 		if (ret == 0) {
-			/* No more received packets. Enable interrupts. */
-			ctx->min_completed_bufs = 1;
-			more = BPF_PROG_RUN(bi->progs[BPFHV_PROG_RX_INTRS],
-						ctx);
-			if (unlikely(more)) {
-				/* More buffers were found, thus we keep
-				 * going. */
-				continue;
-			}
+			/* No more received packets. */
 			break;
 		}
 		if (unlikely(ret < 0)) {
@@ -1455,7 +1452,6 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 			break;
 		}
 		rxq->rx_free_bufs++;
-		count++;
 
 		skb = (struct sk_buff *)ctx->packet;
 		if (unlikely(!skb)) {
@@ -1471,8 +1467,15 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 		}
 	}
 
-	if (!more) {
-		napi_complete(napi);
+	if (count < budget) {
+		/* No more received packets. Complete NAPI, enable interrupts
+		 * and reschedule if necesssary. */
+		napi_complete_done(napi, count);
+		ctx->min_completed_bufs = 1;
+		more = BPF_PROG_RUN(bi->progs[BPFHV_PROG_RX_INTRS], ctx);
+		if (unlikely(more)) {
+			napi_schedule(napi);
+		}
 	}
 
 	if (count > 0) {
