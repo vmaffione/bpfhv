@@ -248,8 +248,13 @@ enum {
 #define BPFHV_IO_DOORBELL_GVA_LO	64
 #define BPFHV_IO_DOORBELL_GVA_HI	68
 
+/* Read only register containing the device version. Used by the driver to
+ * check that it was compiled with this same header file as the hypervisor. */
+#define BPFHV_IO_VERSION		72
+#define		BPFHV_VERSION	1
+
 /* Marker for the end of valid registers, and size of the I/O region. */
-#define BPFHV_IO_END			72
+#define BPFHV_IO_END			76
 #define BPFHV_IO_MASK			0xff
 
 #endif  /* __BPFHV_H__ */

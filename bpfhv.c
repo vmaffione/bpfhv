@@ -195,15 +195,15 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_iomap;
 	}
 
-	printk("IO BAR: start 0x%llx, len %llu, flags 0x%lx\n",
+	pr_info("IO BAR: start 0x%llx, len %llu, flags 0x%lx\n",
 		pci_resource_start(pdev, BPFHV_IO_PCI_BAR),
 		pci_resource_len(pdev, BPFHV_IO_PCI_BAR),
 		pci_resource_flags(pdev, BPFHV_IO_PCI_BAR));
-	printk("DOORBELL MMIO BAR: start 0x%llx, len %llu, flags 0x%lx\n",
+	pr_info("DOORBELL MMIO BAR: start 0x%llx, len %llu, flags 0x%lx\n",
 		pci_resource_start(pdev, BPFHV_DOORBELL_PCI_BAR),
 		pci_resource_len(pdev, BPFHV_DOORBELL_PCI_BAR),
 		pci_resource_flags(pdev, BPFHV_DOORBELL_PCI_BAR));
-	printk("PROG MMIO BAR: start 0x%llx, len %llu, flags 0x%lx\n",
+	pr_info("PROG MMIO BAR: start 0x%llx, len %llu, flags 0x%lx\n",
 		pci_resource_start(pdev, BPFHV_PROG_PCI_BAR),
 		pci_resource_len(pdev, BPFHV_PROG_PCI_BAR),
 		pci_resource_flags(pdev, BPFHV_PROG_PCI_BAR));
@@ -212,6 +212,16 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (!ioaddr) {
 		ret = -EIO;
 		goto err_iomap;
+	}
+
+	{
+		uint32_t hwversion = ioread32(ioaddr + BPFHV_IO_VERSION);
+
+		if (hwversion != BPFHV_VERSION) {
+			pr_err("fatal: bpfhv version mismatch: expected %u,"
+				" got %u\n", BPFHV_VERSION, hwversion);
+			goto err_dbmmio_map;
+		}
 	}
 
 	dbmmio_addr = pci_iomap(pdev, BPFHV_DOORBELL_PCI_BAR, 0);
