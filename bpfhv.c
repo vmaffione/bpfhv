@@ -28,6 +28,8 @@
 
 #include "bpfhv.h"
 
+#define USE_NAPI
+
 #define DEFAULT_MSG_ENABLE (NETIF_MSG_DRV|NETIF_MSG_PROBE|NETIF_MSG_LINK)
 static int debug = -1; /* use DEFAULT_MSG_ENABLE by default */
 module_param(debug, int, /* perm = allow override on modprobe */0);
@@ -146,7 +148,7 @@ static void		bpfhv_resources_dealloc(struct bpfhv_info *bi);
 static netdev_tx_t	bpfhv_start_xmit(struct sk_buff *skb,
 					struct net_device *netdev);
 static int		bpfhv_tx_poll(struct napi_struct *napi, int budget);
-static void		bpfhv_tx_clean(struct bpfhv_txq *txq);
+static int		bpfhv_tx_clean(struct bpfhv_txq *txq);
 static void		bpfhv_tx_ctx_clean(struct bpfhv_txq *txq);
 static int		bpfhv_rx_refill(struct bpfhv_rxq *rxq);
 static int		bpfhv_rx_poll(struct napi_struct *napi, int budget);
@@ -562,7 +564,11 @@ bpfhv_tx_intr(int irq, void *data)
 {
 	struct bpfhv_txq *txq = data;
 
+#ifdef USE_NAPI
 	napi_schedule(&txq->napi);
+#else  /* !USE_NAPI */
+	netif_wake_subqueue(txq->bi->netdev, txq - txq->bi->txqs);
+#endif /* !USE_NAPI */
 
 	return IRQ_HANDLED;
 }
@@ -831,7 +837,7 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		memset(txq->ctx, 0, bi->tx_ctx_size);
 		txq->tx_free_bufs = bi->tx_bufs;
 		txq->ctx->guest_priv = (uintptr_t)txq;
-		txq->ctx->min_free_bufs = 2 + MAX_SKB_FRAGS;
+		txq->ctx->min_completed_bufs = 1;
 		ctx_paddr_write(bi, bi->num_rx_queues + i, txq->ctx_dma);
 	}
 
@@ -1226,8 +1232,29 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	netif_info(bi, tx_queued, bi->netdev,
 		"txp(%u bytes) --> %d\n", skb->len, ret);
 
+#ifdef USE_NAPI
+	/* Enable the interrupts to clean this publushed buffer once
+	 * transmitted. */
+	ctx->min_completed_bufs = i;
+	BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_INTRS], ctx);
+#else  /* !USE_NAPI */
+	skb_orphan(skb);
+	nf_reset(skb);
+#endif /* !USE_NAPI */
+
 	if (txq->tx_free_bufs < 2 + MAX_SKB_FRAGS) {
+#ifdef USE_NAPI
 		netif_stop_subqueue(netdev, txq->idx);
+#else  /* !USE_NAPI */
+		bool have_enough_bufs;
+
+		/* Enable interrupts if we are out of buffers. */
+		ctx->min_completed_bufs = 2 + MAX_SKB_FRAGS - txq->tx_free_bufs;
+		have_enough_bufs = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_INTRS], ctx);
+		if (!have_enough_bufs) {
+			netif_stop_subqueue(netdev, txq->idx);
+		}
+#endif /* !USE_NAPI */
 	}
 
 	if (!skb->xmit_more && (ctx->oflags & BPFHV_OFLAGS_NOTIF_NEEDED)) {
@@ -1241,27 +1268,41 @@ static int
 bpfhv_tx_poll(struct napi_struct *napi, int budget)
 {
 	struct bpfhv_txq *txq = container_of(napi, struct bpfhv_txq, napi);
+	struct bpfhv_tx_context *ctx = txq->ctx;
+	struct bpfhv_info *bi = txq->bi;
 	struct netdev_queue *q =
-		netdev_get_tx_queue(txq->bi->netdev, txq - txq->bi->txqs);
+		netdev_get_tx_queue(bi->netdev, txq - bi->txqs);
+	bool wakeup;
 
 	__netif_tx_lock(q, raw_smp_processor_id());
+
+	/* Disable interrupts while we are calling bpfhv_tx_clean(). */
+	ctx->min_completed_bufs = 0;
+	BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_INTRS], ctx);
+
 	bpfhv_tx_clean(txq);
+	wakeup = (txq->tx_free_bufs >= 2 + MAX_SKB_FRAGS);
+
+	/* Enable interrupts. */
+	ctx->min_completed_bufs = 1;
+	BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_INTRS], ctx);
+
 	__netif_tx_unlock(q);
 
 	napi_complete(napi);
 
-	if (txq->tx_free_bufs >= 2 + MAX_SKB_FRAGS) {
+	if (wakeup) {
 		netif_tx_wake_queue(q);
 	}
 
 	return 0;
 }
 
-static void
+static int
 bpfhv_tx_clean(struct bpfhv_txq *txq)
 {
 	struct bpfhv_info *bi = txq->bi;
-	unsigned int count;
+	int count;
 
 	for (count = 0;; count++) {
 		int ret;
@@ -1285,6 +1326,8 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 		netif_info(bi, tx_done, bi->netdev,
 			"txc() --> %d packets\n", count);
 	}
+
+	return count;
 }
 
 /* This function must be called only on successful return of "txc" or "txr". */
