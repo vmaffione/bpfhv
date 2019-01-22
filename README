@@ -8,9 +8,11 @@ Some goals:
           problems.
 
 TODO (driver):
+	- replace port I/O with MMIO registers
 
 TODO (qemu):
         - Replace cpu_physical_memory_[un]map() with dma_memory_[un]map()
           and the MemoryRegionCache library. This should be only necessary
           if the guest platform has an IOMMU.
           Code in virtqueue_pop() and virtqueue_push().
+	- replace port I/O with MMIO registers
