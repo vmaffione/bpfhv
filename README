@@ -8,7 +8,6 @@ Some goals:
           problems.
 
 TODO (driver):
-	- replace port I/O with MMIO registers
 
 TODO (qemu):
         - Replace cpu_physical_memory_[un]map() with dma_memory_[un]map()

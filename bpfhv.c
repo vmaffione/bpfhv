@@ -43,7 +43,7 @@ struct bpfhv_info {
 	struct pci_dev			*pdev;
 	struct device			*dev;	/* cache &pdev->dev */
 	int				bars;
-	u8* __iomem			ioaddr;
+	u8* __iomem			regaddr;
 	u8* __iomem			dbmmio_addr;
 	u8* __iomem			progmmio_addr;
 
@@ -172,13 +172,13 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	u8* __iomem dbmmio_addr;
 	struct bpfhv_info *bi;
 	size_t doorbell_size;
-	u8* __iomem ioaddr;
+	u8* __iomem regaddr;
 	int bars;
 	int ret;
 	int i;
 
 	/* PCI initialization. */
-	bars = pci_select_bars(pdev, IORESOURCE_MEM | IORESOURCE_IO);
+	bars = pci_select_bars(pdev, IORESOURCE_MEM);
 	ret = pci_enable_device(pdev);
 	if (ret) {
 		return ret;
@@ -195,10 +195,10 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_iomap;
 	}
 
-	pr_info("IO BAR: start 0x%llx, len %llu, flags 0x%lx\n",
-		pci_resource_start(pdev, BPFHV_IO_PCI_BAR),
-		pci_resource_len(pdev, BPFHV_IO_PCI_BAR),
-		pci_resource_flags(pdev, BPFHV_IO_PCI_BAR));
+	pr_info("REGS BAR: start 0x%llx, len %llu, flags 0x%lx\n",
+		pci_resource_start(pdev, BPFHV_REG_PCI_BAR),
+		pci_resource_len(pdev, BPFHV_REG_PCI_BAR),
+		pci_resource_flags(pdev, BPFHV_REG_PCI_BAR));
 	pr_info("DOORBELL MMIO BAR: start 0x%llx, len %llu, flags 0x%lx\n",
 		pci_resource_start(pdev, BPFHV_DOORBELL_PCI_BAR),
 		pci_resource_len(pdev, BPFHV_DOORBELL_PCI_BAR),
@@ -208,14 +208,14 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		pci_resource_len(pdev, BPFHV_PROG_PCI_BAR),
 		pci_resource_flags(pdev, BPFHV_PROG_PCI_BAR));
 
-	ioaddr = pci_iomap(pdev, BPFHV_IO_PCI_BAR, 0);
-	if (!ioaddr) {
+	regaddr = pci_iomap(pdev, BPFHV_REG_PCI_BAR, 0);
+	if (!regaddr) {
 		ret = -EIO;
 		goto err_iomap;
 	}
 
 	{
-		uint32_t hwversion = ioread32(ioaddr + BPFHV_IO_VERSION);
+		uint32_t hwversion = readl(regaddr + BPFHV_REG_VERSION);
 
 		if (hwversion != BPFHV_VERSION) {
 			pr_err("fatal: bpfhv version mismatch: expected %u,"
@@ -237,14 +237,14 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	}
 
 	/* Inform the hypervisor about the doorbell base GVA. */
-	iowrite32(((uint64_t)dbmmio_addr) & 0xffffffff,
-			ioaddr + BPFHV_IO_DOORBELL_GVA_LO);
-	iowrite32((((uint64_t)dbmmio_addr) >> 32ULL) & 0xffffffff,
-			ioaddr + BPFHV_IO_DOORBELL_GVA_HI);
-	doorbell_size = ioread32(ioaddr + BPFHV_IO_DOORBELL_SIZE);
+	writel(((uint64_t)dbmmio_addr) & 0xffffffff,
+			regaddr + BPFHV_REG_DOORBELL_GVA_LO);
+	writel((((uint64_t)dbmmio_addr) >> 32ULL) & 0xffffffff,
+			regaddr + BPFHV_REG_DOORBELL_GVA_HI);
+	doorbell_size = readl(regaddr + BPFHV_REG_DOORBELL_SIZE);
 
-	num_rx_queues = ioread32(ioaddr + BPFHV_IO_NUM_RX_QUEUES);
-	num_tx_queues = ioread32(ioaddr + BPFHV_IO_NUM_TX_QUEUES);
+	num_rx_queues = readl(regaddr + BPFHV_REG_NUM_RX_QUEUES);
+	num_tx_queues = readl(regaddr + BPFHV_REG_NUM_TX_QUEUES);
 	queue_pairs = min(num_tx_queues, num_rx_queues);
 	netdev = alloc_etherdev_mq(sizeof(*bi) +
 				num_rx_queues * sizeof(bi->rxqs[0]) +
@@ -263,7 +263,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	bi->pdev = pdev;
 	bi->dev = &pdev->dev;
 	bi->bars = bars;
-	bi->ioaddr = ioaddr;
+	bi->regaddr = regaddr;
 	bi->dbmmio_addr = dbmmio_addr;
 	bi->progmmio_addr = progmmio_addr;
 	bi->num_rx_queues = num_rx_queues;
@@ -281,10 +281,10 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		uint8_t macaddr[6];
 		uint32_t macreg;
 
-		macreg = ioread32(ioaddr + BPFHV_IO_MAC_HI);
+		macreg = readl(regaddr + BPFHV_REG_MAC_HI);
 		macaddr[0] = (macreg >> 8) & 0xff;
 		macaddr[1] = macreg & 0xff;
-		macreg = ioread32(ioaddr + BPFHV_IO_MAC_LO);
+		macreg = readl(regaddr + BPFHV_REG_MAC_LO);
 		macaddr[2] = (macreg >> 24) & 0xff;
 		macaddr[3] = (macreg >> 16) & 0xff;
 		macaddr[4] = (macreg >> 8) & 0xff;
@@ -352,7 +352,7 @@ err_alloc_eth:
 err_progmmio_map:
 	iounmap(dbmmio_addr);
 err_dbmmio_map:
-	iounmap(ioaddr);
+	iounmap(regaddr);
 err_iomap:
 	pci_release_selected_regions(pdev, bars);
 err_pci_req_reg:
@@ -382,7 +382,7 @@ bpfhv_remove(struct pci_dev *pdev)
 	bpfhv_programs_teardown(bi);
 	iounmap(bi->progmmio_addr);
 	iounmap(bi->dbmmio_addr);
-	iounmap(bi->ioaddr);
+	iounmap(bi->regaddr);
 	pci_release_selected_regions(pdev, bi->bars);
 	free_netdev(netdev);
 	pci_disable_device(pdev);
@@ -514,7 +514,7 @@ bpfhv_upgrade(struct work_struct *w)
 {
 	struct bpfhv_info *bi = container_of(w, struct bpfhv_info,
 						upgrade_work);
-	uint32_t status = ioread32(bi->ioaddr + BPFHV_IO_STATUS);
+	uint32_t status = readl(bi->regaddr + BPFHV_REG_STATUS);
 	uint32_t ctrl;
 	int ret;
 
@@ -537,9 +537,9 @@ bpfhv_upgrade(struct work_struct *w)
 
 	/* Tell the hypervisor that we are ready to proceed with
 	 * the upgrade. */
-	ctrl = ioread32(bi->ioaddr + BPFHV_IO_CTRL);
-	iowrite32(ctrl | BPFHV_CTRL_UPGRADE_READY,
-			bi->ioaddr + BPFHV_IO_CTRL);
+	ctrl = readl(bi->regaddr + BPFHV_REG_CTRL);
+	writel(ctrl | BPFHV_CTRL_UPGRADE_READY,
+			bi->regaddr + BPFHV_REG_CTRL);
 
 	/* Do the upgrade. */
 	ret = bpfhv_programs_setup(bi);
@@ -678,11 +678,11 @@ progname_from_idx(unsigned int prog_idx)
 static void
 ctx_paddr_write(struct bpfhv_info *bi, unsigned int qidx, phys_addr_t paddr)
 {
-	iowrite32(qidx, bi->ioaddr + BPFHV_IO_QUEUE_SELECT);
-	iowrite32(paddr & 0xffffffff,
-			bi->ioaddr + BPFHV_IO_CTX_PADDR_LO);
-	iowrite32((paddr >> 32) & 0xffffffff,
-			bi->ioaddr + BPFHV_IO_CTX_PADDR_HI);
+	writel(qidx, bi->regaddr + BPFHV_REG_QUEUE_SELECT);
+	writel(paddr & 0xffffffff,
+			bi->regaddr + BPFHV_REG_CTX_PADDR_LO);
+	writel((paddr >> 32) & 0xffffffff,
+			bi->regaddr + BPFHV_REG_CTX_PADDR_HI);
 }
 
 static int
@@ -772,10 +772,10 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 	bpfhv_programs_teardown(bi);
 
 	/* Update context size and max number of buffers. */
-	bi->rx_bufs = ioread32(bi->ioaddr + BPFHV_IO_NUM_RX_BUFS);
-	bi->tx_bufs = ioread32(bi->ioaddr + BPFHV_IO_NUM_TX_BUFS);
-	bi->rx_ctx_size = ioread32(bi->ioaddr + BPFHV_IO_RX_CTX_SIZE);
-	bi->tx_ctx_size = ioread32(bi->ioaddr + BPFHV_IO_TX_CTX_SIZE);
+	bi->rx_bufs = readl(bi->regaddr + BPFHV_REG_NUM_RX_BUFS);
+	bi->tx_bufs = readl(bi->regaddr + BPFHV_REG_NUM_TX_BUFS);
+	bi->rx_ctx_size = readl(bi->regaddr + BPFHV_REG_RX_CTX_SIZE);
+	bi->tx_ctx_size = readl(bi->regaddr + BPFHV_REG_TX_CTX_SIZE);
 
 	/* Read the eBPF programs from the hypervisor. */
 	for (i = BPFHV_PROG_NONE + 1; i < BPFHV_PROG_MAX; i++) {
@@ -783,8 +783,8 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 		size_t prog_len;
 		size_t j, jmax;
 
-		iowrite32(i, bi->ioaddr + BPFHV_IO_PROG_SELECT);
-		prog_len = ioread32(bi->ioaddr + BPFHV_IO_PROG_SIZE);
+		writel(i, bi->regaddr + BPFHV_REG_PROG_SELECT);
+		prog_len = readl(bi->regaddr + BPFHV_REG_PROG_SIZE);
 		if (prog_len == 0 || prog_len > BPFHV_PROG_SIZE_MAX) {
 			netif_err(bi, drv, bi->netdev,
 				"Invalid program length %u\n",
@@ -999,9 +999,9 @@ bpfhv_open(struct net_device *netdev)
 
 	/* Enable transmit and receive in the hardware, and
 	 * check that the operation was successful. */
-	iowrite32(BPFHV_CTRL_RX_ENABLE | BPFHV_CTRL_TX_ENABLE,
-			bi->ioaddr + BPFHV_IO_CTRL);
-	status = ioread32(bi->ioaddr + BPFHV_IO_STATUS);
+	writel(BPFHV_CTRL_RX_ENABLE | BPFHV_CTRL_TX_ENABLE,
+			bi->regaddr + BPFHV_REG_CTRL);
+	status = readl(bi->regaddr + BPFHV_REG_STATUS);
 	if ((status & (BPFHV_STATUS_RX_ENABLED | BPFHV_STATUS_TX_ENABLED))
 		!= (BPFHV_STATUS_RX_ENABLED | BPFHV_STATUS_TX_ENABLED)) {
 		if (!(status & BPFHV_STATUS_RX_ENABLED)) {
@@ -1050,7 +1050,7 @@ bpfhv_close(struct net_device *netdev)
 	}
 
 	/* Disable transmit and receive in the hardware. */
-	iowrite32(0, bi->ioaddr + BPFHV_IO_CTRL);
+	writel(0, bi->regaddr + BPFHV_REG_CTRL);
 
 	/* Disable NAPI. */
 	for (i = 0; i < bi->num_rx_queues; i++) {

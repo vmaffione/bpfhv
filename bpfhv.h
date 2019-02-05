@@ -139,7 +139,7 @@ static void *BPFHV_FUNC(pkt_alloc, struct bpfhv_rx_context *ctx);
  */
 #define BPFHV_PCI_VENDOR_ID		0x1b36 /* qemu virtual devices */
 #define BPFHV_PCI_DEVICE_ID		0x000e
-#define BPFHV_IO_PCI_BAR		0
+#define BPFHV_REG_PCI_BAR		0
 #define BPFHV_DOORBELL_PCI_BAR		1
 #define BPFHV_MSIX_PCI_BAR		2
 #define BPFHV_PROG_PCI_BAR		3
@@ -151,7 +151,7 @@ static void *BPFHV_FUNC(pkt_alloc, struct bpfhv_rx_context *ctx);
  *   - bit 2: receive enabled: value is 1 if receive operation is enabled;
  *   - bit 3: transmit enabled: value is 1 if transmit operation is enabled;
  */
-#define BPFHV_IO_STATUS			0
+#define BPFHV_REG_STATUS			0
 #define		BPFHV_STATUS_LINK	(1 << 0)
 #define		BPFHV_STATUS_UPGRADE	(1 << 1)
 #define		BPFHV_STATUS_RX_ENABLED (1 << 2)
@@ -169,7 +169,7 @@ static void *BPFHV_FUNC(pkt_alloc, struct bpfhv_rx_context *ctx);
  *            hypervisor will then load the new program in the program MMIO
  *            and reset the BPFHV_STATUS_UPGRADE bit the status register;
  */
-#define BPFHV_IO_CTRL			4
+#define BPFHV_REG_CTRL			4
 #define		BPFHV_CTRL_RX_ENABLE		(1 << 0)
 #define		BPFHV_CTRL_TX_ENABLE		(1 << 1)
 #define		BPFHV_CTRL_UPGRADE_READY	(1 << 2)
@@ -177,50 +177,50 @@ static void *BPFHV_FUNC(pkt_alloc, struct bpfhv_rx_context *ctx);
 /* Device MAC address: the least significant 32 bits of the address are taken
  * from MAC_LO, while the most significant 16 bits are taken from the least
  * significant 16 bits of MAC_HI. */
-#define BPFHV_IO_MAC_LO			8
-#define BPFHV_IO_MAC_HI			12
+#define BPFHV_REG_MAC_LO			8
+#define BPFHV_REG_MAC_HI			12
 
 /* Number of receive and transmit queues implemented by the device. */
-#define BPFHV_IO_NUM_RX_QUEUES		16
-#define BPFHV_IO_NUM_TX_QUEUES		20
+#define BPFHV_REG_NUM_RX_QUEUES		16
+#define BPFHV_REG_NUM_TX_QUEUES		20
 
 /* The maximum number of pending buffers for receive and transmit queues. */
-#define BPFHV_IO_NUM_RX_BUFS		24
-#define BPFHV_IO_NUM_TX_BUFS		28
+#define BPFHV_REG_NUM_RX_BUFS		24
+#define BPFHV_REG_NUM_TX_BUFS		28
 
 /* Size of per-queue context for receive and transmit queues. The context
  * size includes the size of struct bpfhv_rx_context (or struct
  * bpfhv_tx_context) plus the size of hypervisor-specific data structures. */
-#define BPFHV_IO_RX_CTX_SIZE            32
-#define BPFHV_IO_TX_CTX_SIZE            36
+#define BPFHV_REG_RX_CTX_SIZE            32
+#define BPFHV_REG_TX_CTX_SIZE            36
 
 /* A guest can notify a queue by writing (any value) to a per-queue doorbell
  * register. Doorbell registers are exposed through a separate memory-mapped
- * I/O region, and laid out as an array. The BPFHV_IO_DOORBELL_SIZE reports
+ * I/O region, and laid out as an array. The BPFHV_REG_DOORBELL_SIZE reports
  * the size of each slot in the array. Writing to any address within the i-th
  * slot will ring the i-th doorbell. Indices in [0, NUM_RX_QUEUES-1] reference
  * receive queues, while transmit queues correspond to indices in
  * [NUM_RX_QUEUES, NUM_RX_QUEUES + NUM_TX_QUEUES - 1].
  */
-#define BPFHV_IO_DOORBELL_SIZE		40
+#define BPFHV_REG_DOORBELL_SIZE		40
 
 /* A register where the guest can write the index of a receive or transmit
  * queue, and subsequently perform an operation on that queue. Indices in
  * [0, NUM_RX_QUEUES-1] reference receive queues, while transmit queues
  * correspond to indices in [NUM_RX_QUEUES, NUM_RX_QUEUES + NUM_TX_QUEUES - 1].
  */
-#define BPFHV_IO_QUEUE_SELECT		44
+#define BPFHV_REG_QUEUE_SELECT		44
 
 /* A 64-bit register where the guest can write the physical address of the
  * receive or transmit context for the selected queue. */
-#define BPFHV_IO_CTX_PADDR_LO		48
-#define BPFHV_IO_CTX_PADDR_HI		52
+#define BPFHV_REG_CTX_PADDR_LO		48
+#define BPFHV_REG_CTX_PADDR_HI		52
 
 /* Select the eBPF program to be read from the device. A guest can write to
- * the select register, and then read the program size (BPFHV_IO_PROG_SIZE)
+ * the select register, and then read the program size (BPFHV_REG_PROG_SIZE)
  * and the actual eBPF code. The program size is expressed as a number of
  * eBPF instructions (with each instruction being 8 bytes wide). */
-#define BPFHV_IO_PROG_SELECT		56
+#define BPFHV_REG_PROG_SELECT		56
 enum {
 	BPFHV_PROG_NONE = 0,
 	BPFHV_PROG_RX_PUBLISH,
@@ -233,7 +233,7 @@ enum {
 	BPFHV_PROG_TX_RECLAIM,
 	BPFHV_PROG_MAX,
 };
-#define BPFHV_IO_PROG_SIZE		60
+#define BPFHV_REG_PROG_SIZE		60
 #define BPFHV_PROG_SIZE_MAX		16384
 
 /* A 64-bit register where the guest can write the Guest Virtual Address
@@ -245,16 +245,16 @@ enum {
  * that notifications can also be performed directly by the guest native
  * code, and therefore the hypervisor is not required to implement a
  * relocation mechanism.  */
-#define BPFHV_IO_DOORBELL_GVA_LO	64
-#define BPFHV_IO_DOORBELL_GVA_HI	68
+#define BPFHV_REG_DOORBELL_GVA_LO	64
+#define BPFHV_REG_DOORBELL_GVA_HI	68
 
 /* Read only register containing the device version. Used by the driver to
  * check that it was compiled with this same header file as the hypervisor. */
-#define BPFHV_IO_VERSION		72
+#define BPFHV_REG_VERSION		72
 #define		BPFHV_VERSION	1
 
 /* Marker for the end of valid registers, and size of the I/O region. */
-#define BPFHV_IO_END			76
-#define BPFHV_IO_MASK			0xff
+#define BPFHV_REG_END			76
+#define BPFHV_REG_MASK			0xff
 
 #endif  /* __BPFHV_H__ */
