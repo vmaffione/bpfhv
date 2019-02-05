@@ -148,8 +148,8 @@ static void		bpfhv_resources_dealloc(struct bpfhv_info *bi);
 static netdev_tx_t	bpfhv_start_xmit(struct sk_buff *skb,
 					struct net_device *netdev);
 static int		bpfhv_tx_poll(struct napi_struct *napi, int budget);
-static int		bpfhv_tx_clean(struct bpfhv_txq *txq);
-static void		bpfhv_tx_ctx_clean(struct bpfhv_txq *txq);
+static int		bpfhv_tx_clean(struct bpfhv_txq *txq, bool in_napi);
+static void		bpfhv_tx_ctx_clean(struct bpfhv_txq *txq, bool in_napi);
 static int		bpfhv_rx_refill(struct bpfhv_rxq *rxq);
 static int		bpfhv_rx_poll(struct napi_struct *napi, int budget);
 static struct net_device_stats *bpfhv_get_stats(struct net_device *netdev);
@@ -1097,7 +1097,7 @@ bpfhv_resources_dealloc(struct bpfhv_info *bi)
 				break;
 			}
 
-			bpfhv_tx_ctx_clean(txq);
+			bpfhv_tx_ctx_clean(txq, /*in_napi=*/false);
 			count += txq->ctx->num_bufs;
 		}
 
@@ -1181,7 +1181,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 
 	/* Opportunistically free completed packets before queueing a new
 	 * one. */
-	bpfhv_tx_clean(txq);
+	bpfhv_tx_clean(txq, /*in_napi=*/false);
 
 	nr_frags = skb_shinfo(skb)->nr_frags;
 	if (unlikely(nr_frags + 1 > BPFHV_MAX_TX_BUFS)) {
@@ -1290,7 +1290,7 @@ bpfhv_tx_poll(struct napi_struct *napi, int budget)
 	ctx->min_completed_bufs = 0;
 	BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_INTRS], ctx);
 
-	bpfhv_tx_clean(txq);
+	bpfhv_tx_clean(txq, /*in_napi=*/true);
 	wakeup = (txq->tx_free_bufs >= 2 + MAX_SKB_FRAGS);
 
 	/* Enable interrupts and complete NAPI. */
@@ -1314,7 +1314,7 @@ bpfhv_tx_poll(struct napi_struct *napi, int budget)
 }
 
 static int
-bpfhv_tx_clean(struct bpfhv_txq *txq)
+bpfhv_tx_clean(struct bpfhv_txq *txq, bool in_napi)
 {
 	struct bpfhv_info *bi = txq->bi;
 	int count;
@@ -1334,7 +1334,7 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 			break;
 		}
 
-		bpfhv_tx_ctx_clean(txq);
+		bpfhv_tx_ctx_clean(txq, in_napi);
 	}
 
 	if (count) {
@@ -1347,7 +1347,7 @@ bpfhv_tx_clean(struct bpfhv_txq *txq)
 
 /* This function must be called only on successful return of "txc" or "txr". */
 static void
-bpfhv_tx_ctx_clean(struct bpfhv_txq *txq)
+bpfhv_tx_ctx_clean(struct bpfhv_txq *txq, bool in_napi)
 {
 	struct bpfhv_tx_context *ctx = txq->ctx;
 	struct bpfhv_info *bi = txq->bi;
@@ -1373,7 +1373,7 @@ bpfhv_tx_ctx_clean(struct bpfhv_txq *txq)
 	txq->tx_free_bufs += ctx->num_bufs;
 
 	BUG_ON(!skb);
-	dev_kfree_skb_any(skb);
+	napi_consume_skb(skb, in_napi);
 }
 
 static int

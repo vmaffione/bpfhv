@@ -14,4 +14,3 @@ TODO (qemu):
           and the MemoryRegionCache library. This should be only necessary
           if the guest platform has an IOMMU.
           Code in virtqueue_pop() and virtqueue_push().
-	- replace port I/O with MMIO registers
