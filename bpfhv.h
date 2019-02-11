@@ -122,6 +122,7 @@ struct bpfhv_rx_context {
 enum bpfhv_helper_id {
 	BPFHV_FUNC_rx_pkt_alloc = BPFHV_HELPER_MAGIC,
 	BPFHV_FUNC_pkt_l4_csum_md_get,
+	BPFHV_FUNC_pkt_l4_csum_md_set,
 };
 
 #ifndef BPFHV_FUNC

@@ -662,6 +662,16 @@ BPF_CALL_3(bpf_hv_pkt_l4_csum_md_get, struct bpfhv_tx_context *, ctx,
 	return 0; /* Checksum already done or not needed. */
 }
 
+BPF_CALL_3(bpf_hv_pkt_l4_csum_md_set, struct bpfhv_rx_context *, ctx,
+	   uint16_t, csum_start, uint16_t, csum_offset)
+{
+	struct sk_buff *skb = (struct sk_buff *)(uintptr_t)ctx->packet;
+
+	skb_partial_csum_set(skb, csum_start, csum_offset);
+
+	return 0;
+}
+
 #undef PROGDUMP
 #ifdef PROGDUMP
 static void
@@ -928,6 +938,9 @@ bpfhv_helper_calls_fixup(struct bpfhv_info *bi, struct bpf_insn *insns,
 			break;
 		case BPFHV_FUNC_pkt_l4_csum_md_get:
 			func = bpf_hv_pkt_l4_csum_md_get;
+			break;
+		case BPFHV_FUNC_pkt_l4_csum_md_set:
+			func = bpf_hv_pkt_l4_csum_md_set;
 			break;
 		default:
 			netif_err(bi, drv, bi->netdev,
