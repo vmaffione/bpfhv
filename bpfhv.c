@@ -593,6 +593,9 @@ bpfhv_tx_intr(int irq, void *data)
 #define RXQ_FROM_CTX(_ctx)\
 	((struct bpfhv_rxq *)((uintptr_t)((_ctx)->guest_priv)))
 
+#define TXQ_FROM_CTX(_ctx)\
+	((struct bpfhv_txq *)((uintptr_t)((_ctx)->guest_priv)))
+
 BPF_CALL_1(bpf_hv_rx_pkt_alloc, struct bpfhv_rx_context *, ctx)
 {
 	struct bpfhv_rxq *rxq = RXQ_FROM_CTX(ctx);
@@ -630,6 +633,20 @@ BPF_CALL_1(bpf_hv_rx_pkt_alloc, struct bpfhv_rx_context *, ctx)
 	}
 
 	return skb ? 0 : -ENOMEM;
+}
+
+BPF_CALL_3(bpf_hv_pkt_l4_csum_md_get, struct bpfhv_tx_context *, ctx,
+	   uint16_t *, csum_start, uint16_t *, csum_offset)
+{
+	struct sk_buff *skb = (struct sk_buff *)(uintptr_t)ctx->packet;
+
+	if (skb->ip_summed == CHECKSUM_PARTIAL) {
+		*csum_start = skb_checksum_start_offset(skb);
+		*csum_offset = skb->csum_offset;
+		return 1; /* Checksum needed. */
+	}
+
+	return 0; /* Checksum already done or not needed. */
 }
 
 #undef PROGDUMP
@@ -895,6 +912,9 @@ bpfhv_helper_calls_fixup(struct bpfhv_info *bi, struct bpf_insn *insns,
 		switch (insns->imm) {
 		case BPFHV_FUNC_rx_pkt_alloc:
 			func = bpf_hv_rx_pkt_alloc;
+			break;
+		case BPFHV_FUNC_pkt_l4_csum_md_get:
+			func = bpf_hv_pkt_l4_csum_md_get;
 			break;
 		default:
 			netif_err(bi, drv, bi->netdev,
