@@ -179,6 +179,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	struct bpfhv_info *bi;
 	size_t doorbell_size;
 	u8* __iomem regaddr;
+	uint32_t features;
 	int bars;
 	int ret;
 	int i;
@@ -299,11 +300,23 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	}
 
 	netdev->netdev_ops = &bpfhv_netdev_ops;
-
-	netdev->features = NETIF_F_HIGHDMA;
 	netif_set_real_num_tx_queues(netdev, queue_pairs);
 	netif_set_real_num_rx_queues(netdev, queue_pairs);
+
+	/* Feature negotiation. */
+	features = readl(regaddr + BPFHV_REG_FEATURES);
+	features &= ~(BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM);
+	writel(features, regaddr + BPFHV_REG_FEATURES);
+	netdev->features = NETIF_F_HIGHDMA | NETIF_F_SG;
+	netdev->hw_features = NETIF_F_SG;
 	netdev->needed_headroom = 0;
+	if (features & BPFHV_F_TX_CSUM) {
+		netdev->hw_features |= NETIF_F_HW_CSUM;
+		netdev->features |= NETIF_F_HW_CSUM;
+	}
+	if (features & BPFHV_F_RX_CSUM) {
+		netdev->features = NETIF_F_RXCSUM;
+	}
 
 	/* Prepare transmit/receive eBPF programs and the associated
 	 * contexts. */
