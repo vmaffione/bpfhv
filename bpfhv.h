@@ -50,8 +50,8 @@ struct bpfhv_tx_context {
 	 * a value private to the guest ('cookie'), that the guest can
 	 * use to match published buffers to completed ones.
 	 *
-	 * On publication, 'bufs' and 'num_bufs' are input argument for
-	 * the eBPF program, and 'oflags' is an output argument. The
+	 * On publication, 'packet', 'bufs' and 'num_bufs' are input argument
+	 * for the eBPF program, and 'oflags' is an output argument. The
 	 * BPFHV_OFLAGS_NOTIF_NEEDED bit is set if the guest is required
 	 * to notify the hypervisor.
 	 * On completion, 'bufs', 'num_bufs' and 'oflags' are output arguments.
@@ -60,8 +60,9 @@ struct bpfhv_tx_context {
 	 * BPFHV_OFLAGS_RESCHED_NEEDED flag is set if more completion events
 	 * are available.
 	 */
+	uint64_t		packet;
 #define BPFHV_MAX_TX_BUFS		64
-        struct bpfhv_tx_buf	bufs[BPFHV_MAX_TX_BUFS];
+	struct bpfhv_tx_buf	bufs[BPFHV_MAX_TX_BUFS];
 	uint32_t		num_bufs;
 	uint32_t		oflags;
 #define BPFHV_OFLAGS_NOTIF_NEEDED	(1 << 0)
@@ -124,7 +125,7 @@ enum bpfhv_helper_id {
 
 #ifndef BPFHV_FUNC
 #define BPFHV_FUNC(NAME, ...)              \
-   (*NAME)(__VA_ARGS__) = (void *)BPFHV_FUNC_##NAME
+	(*NAME)(__VA_ARGS__) = (void *)BPFHV_FUNC_##NAME
 #endif
 
 /* Example of helper call definition, to be used in the C code to be compiled

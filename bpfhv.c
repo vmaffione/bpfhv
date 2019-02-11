@@ -303,6 +303,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	netdev->features = NETIF_F_HIGHDMA;
 	netif_set_real_num_tx_queues(netdev, queue_pairs);
 	netif_set_real_num_rx_queues(netdev, queue_pairs);
+	netdev->needed_headroom = 0;
 
 	/* Prepare transmit/receive eBPF programs and the associated
 	 * contexts. */
@@ -1214,6 +1215,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	skb_tx_timestamp(skb);
 
 	/* Prepare the input arguments for the txp program. */
+	ctx->packet = (uintptr_t)skb;
 
 	/* Linear part. */
 	dma = dma_map_single(dev, skb->data, len, DMA_TO_DEVICE);
