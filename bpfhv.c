@@ -90,6 +90,9 @@ struct bpfhv_rxq {
 	 * more receive buffers. */
 	size_t				rx_free_bufs;
 
+	/* Structure for packet buffer allocation. */
+	struct page_frag		alloc_frag;
+
 	/* Address of the doorbell to be used for guest-->hv notifications
 	 * on this queue. */
 	u32* __iomem			doorbell;
@@ -99,6 +102,9 @@ struct bpfhv_rxq {
 	char irq_name[64];
 
 };
+
+#define BPFHV_RX_PAD	(NET_IP_ALIGN + NET_SKB_PAD)
+#define BPFHV_RX_PKT_SZ	(ETH_HLEN + VLAN_HLEN + ETH_DATA_LEN)
 
 struct bpfhv_txq {
 	struct bpfhv_info		*bi;
@@ -150,7 +156,7 @@ static netdev_tx_t	bpfhv_start_xmit(struct sk_buff *skb,
 static int		bpfhv_tx_poll(struct napi_struct *napi, int budget);
 static int		bpfhv_tx_clean(struct bpfhv_txq *txq, bool in_napi);
 static void		bpfhv_tx_ctx_clean(struct bpfhv_txq *txq, bool in_napi);
-static int		bpfhv_rx_refill(struct bpfhv_rxq *rxq);
+static int		bpfhv_rx_refill(struct bpfhv_rxq *rxq, gfp_t gfp);
 static int		bpfhv_rx_poll(struct napi_struct *napi, int budget);
 static struct net_device_stats *bpfhv_get_stats(struct net_device *netdev);
 static int		bpfhv_change_mtu(struct net_device *netdev, int new_mtu);
@@ -603,16 +609,23 @@ BPF_CALL_1(bpf_hv_rx_pkt_alloc, struct bpfhv_rx_context *, ctx)
 		dma_unmap_single(rxq->bi->dev, (dma_addr_t)rxb->paddr,
 				rxb->len, DMA_FROM_DEVICE);
 		if (i == 0) {
-			skb = napi_alloc_skb(&rxq->napi, rxb->len);
-			if (skb) {
-				/* TODO remove the data copy */
-				skb_put_data(skb, kbuf, rxb->len);
+			size_t bufsize = BPFHV_RX_PAD +
+					 BPFHV_RX_PKT_SZ;
+
+			bufsize = SKB_DATA_ALIGN(bufsize) +
+			    SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+			skb = build_skb(kbuf, bufsize);
+			if (unlikely(!skb)) {
+				put_page(virt_to_head_page(kbuf));
+			} else {
+				skb_reserve(skb, BPFHV_RX_PAD);
+				skb_put(skb, rxb->len);
 				ctx->packet = (uintptr_t)skb;
 			}
 		} else {
 			/* TODO handle all the fragments. */
+			BUG_ON(true);
 		}
-		kfree(kbuf);
 	}
 
 	return skb ? 0 : -ENOMEM;
@@ -1030,7 +1043,7 @@ bpfhv_resources_alloc(struct bpfhv_info *bi)
 	for (i = 0; i < bi->num_rx_queues; i++) {
 		struct bpfhv_rxq *rxq = bi->rxqs + i;
 
-		ret = bpfhv_rx_refill(rxq);
+		ret = bpfhv_rx_refill(rxq, GFP_KERNEL);
 		if (ret) {
 			return ret;
 		}
@@ -1144,7 +1157,7 @@ bpfhv_resources_dealloc(struct bpfhv_info *bi)
 				dma_unmap_single(bi->dev,
 						(dma_addr_t)rxb->paddr,
 						rxb->len, DMA_FROM_DEVICE);
-				kfree(kbuf);
+				put_page(virt_to_head_page(kbuf));
 			}
 
 			rxq->rx_free_bufs += ctx->num_bufs;
@@ -1159,6 +1172,11 @@ bpfhv_resources_dealloc(struct bpfhv_info *bi)
 			netif_err(bi, drv, bi->netdev,
 				"%d receive buffers not reclaimed\n",
 				(int)bi->rx_bufs - (int)rxq->rx_free_bufs);
+		}
+
+		if (rxq->alloc_frag.page) {
+			put_page(rxq->alloc_frag.page);
+			rxq->alloc_frag.page = NULL;
 		}
 	}
 }
@@ -1377,8 +1395,9 @@ bpfhv_tx_ctx_clean(struct bpfhv_txq *txq, bool in_napi)
 }
 
 static int
-bpfhv_rx_refill(struct bpfhv_rxq *rxq)
+bpfhv_rx_refill(struct bpfhv_rxq *rxq, gfp_t gfp)
 {
+	struct page_frag *alloc_frag = &rxq->alloc_frag;
 	struct bpfhv_rx_context *ctx = rxq->ctx;
 	struct bpfhv_info *bi = rxq->bi;
 	struct device *dev = bi->dev;
@@ -1395,22 +1414,32 @@ bpfhv_rx_refill(struct bpfhv_rxq *rxq)
 
 		/* Prepare the context for publishing receive buffers. */
 		for (i = 0; i < n; i++) {
-			/* TODO allocate buffers using get_page or
-			 * skb_frag_alloc. */
-			const size_t bufsize = 2048;
-			void *kbuf = kmalloc(bufsize, GFP_KERNEL);
+			size_t bufsize = BPFHV_RX_PAD +
+					 BPFHV_RX_PKT_SZ;
 			struct bpfhv_rx_buf *rxb = ctx->bufs + i;
 			dma_addr_t dma;
+			void *kbuf;
 
-			if (kbuf == NULL) {
+			/* We need to reserve space for shared info, and
+			 * make sure the sizes are properly aligned. */
+			bufsize = SKB_DATA_ALIGN(bufsize) +
+			    SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+
+			if (unlikely(!skb_page_frag_refill(bufsize,
+						alloc_frag, gfp))) {
 				oom = true;
 				break;
 			}
 
-			dma = dma_map_single(dev, kbuf, bufsize,
-						DMA_FROM_DEVICE);
+			kbuf = (char *)page_address(alloc_frag->page) +
+				alloc_frag->offset;
+			get_page(alloc_frag->page);
+			alloc_frag->offset += bufsize;
+
+			dma = dma_map_single(dev, kbuf + BPFHV_RX_PAD,
+					     BPFHV_RX_PKT_SZ, DMA_FROM_DEVICE);
 			if (unlikely(dma_mapping_error(dev, dma))) {
-				kfree(kbuf);
+				put_page(virt_to_head_page(kbuf));
 				break;
 			}
 			rxb->cookie = (uintptr_t)kbuf;
@@ -1473,7 +1502,7 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 		skb->protocol = eth_type_trans(skb, bi->netdev);
 		netif_receive_skb(skb);
 		if (rxq->rx_free_bufs >= 16) {
-			bpfhv_rx_refill(rxq);
+			bpfhv_rx_refill(rxq, GFP_ATOMIC);
 		}
 	}
 
