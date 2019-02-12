@@ -305,7 +305,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	/* Feature negotiation. */
 	features = readl(regaddr + BPFHV_REG_FEATURES);
-	features &= ~(BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM);
+	features &= (BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM);
 	writel(features, regaddr + BPFHV_REG_FEATURES);
 	netdev->features = NETIF_F_HIGHDMA | NETIF_F_SG;
 	netdev->hw_features = NETIF_F_SG;
