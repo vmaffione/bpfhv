@@ -305,7 +305,8 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	/* Negotiate features with the hypervisor. */
 	features = readl(regaddr + BPFHV_REG_FEATURES);
-	features &= (BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM);
+	features &= (BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM | BPFHV_F_TSOv4 |
+		BPFHV_F_TCPv4_LRO | BPFHV_F_TSOv6 | BPFHV_F_TCPv6_LRO);
 	writel(features, regaddr + BPFHV_REG_FEATURES);
 	netdev->features = NETIF_F_HIGHDMA | NETIF_F_SG;
 	netdev->hw_features = NETIF_F_SG;
@@ -313,10 +314,23 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (features & BPFHV_F_TX_CSUM) {
 		netdev->hw_features |= NETIF_F_HW_CSUM;
 		netdev->features |= NETIF_F_HW_CSUM;
+		if (features & BPFHV_F_TSOv4) {
+			netdev->hw_features |= NETIF_F_TSO;
+		}
+		if (features & BPFHV_F_TSOv6) {
+			netdev->hw_features |= NETIF_F_TSO6;
+		}
+		netdev->features |= NETIF_F_GSO_ROBUST;
+		netdev->features |= netdev->hw_features & NETIF_F_ALL_TSO;
 	}
 	if (features & BPFHV_F_RX_CSUM) {
 		netdev->features |= NETIF_F_RXCSUM;
 	}
+	if (features & (BPFHV_F_TCPv4_LRO | BPFHV_F_TCPv6_LRO)) {
+		netdev->hw_features |= NETIF_F_LRO;
+		netdev->features |= NETIF_F_LRO;
+	}
+	netdev->vlan_features = netdev->features;
 
 	/* Prepare transmit/receive eBPF programs and the associated
 	 * contexts. */
