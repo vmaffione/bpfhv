@@ -264,6 +264,14 @@ enum {
 #define		BPFHV_F_TX_CSUM	(1 << 0)
 /* Guest handles rx packets with partial l4 csum. */
 #define		BPFHV_F_RX_CSUM	(1 << 1)
+/* Host handles TSO packets (TCP transmission). */
+#define		BPFHV_F_TSO	(1 << 2)
+/* Guest handles LRO packets (TCP reception). */
+#define		BPFHV_F_TCP_LRO	(1 << 3)
+/* Host handles UFO packets (UDP transmission). */
+#define		BPFHV_F_UFO	(1 << 4)
+/* Guest handles LRO packets (UDP reception). */
+#define		BPFHV_F_UDP_LRO	(1 << 5)
 
 /* Marker for the end of valid registers, and size of the I/O region. */
 #define BPFHV_REG_END			80
