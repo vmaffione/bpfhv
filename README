@@ -6,6 +6,9 @@ Some goals:
         - Virtio 1.1 vs 1.0 (while 0.95 is still around). This is a
           sign that there is a need for evolution and compatbility
           problems.
+        - You can define a metadata format (e.g. virtio-net header)
+          that fits the specific hardware NIC features used by a
+          cloud provider.
 
 TODO (driver):
 

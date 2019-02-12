@@ -266,7 +266,7 @@ enum {
 #define		BPFHV_F_RX_CSUM	(1 << 1)
 
 /* Marker for the end of valid registers, and size of the I/O region. */
-#define BPFHV_REG_END			76
+#define BPFHV_REG_END			80
 #define BPFHV_REG_MASK			0xff
 
 #endif  /* __BPFHV_H__ */
