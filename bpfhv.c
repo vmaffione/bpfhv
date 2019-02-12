@@ -303,7 +303,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	netif_set_real_num_tx_queues(netdev, queue_pairs);
 	netif_set_real_num_rx_queues(netdev, queue_pairs);
 
-	/* Feature negotiation. */
+	/* Negotiate features with the hypervisor. */
 	features = readl(regaddr + BPFHV_REG_FEATURES);
 	features &= (BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM);
 	writel(features, regaddr + BPFHV_REG_FEATURES);
@@ -315,7 +315,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		netdev->features |= NETIF_F_HW_CSUM;
 	}
 	if (features & BPFHV_F_RX_CSUM) {
-		netdev->features = NETIF_F_RXCSUM;
+		netdev->features |= NETIF_F_RXCSUM;
 	}
 
 	/* Prepare transmit/receive eBPF programs and the associated
