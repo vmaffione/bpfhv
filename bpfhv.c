@@ -104,8 +104,14 @@ struct bpfhv_rxq {
 
 };
 
+/* Padding to be reserved at the beginning of the linear part of the skb. */
 #define BPFHV_RX_PAD	(NET_IP_ALIGN + NET_SKB_PAD)
+/* Maximum receive packet size without LRO. */
 #define BPFHV_RX_PKT_SZ	(ETH_HLEN + VLAN_HLEN + ETH_DATA_LEN)
+/* Bytes to allocate from the frag allocator in order to build a complete
+ * skb (including data and shared info). */
+#define BPFHV_RX_SKB_SZ	(SKB_DATA_ALIGN(BPFHV_RX_PAD + BPFHV_RX_PKT_SZ) \
+			+ SKB_DATA_ALIGN(sizeof(struct skb_shared_info)))
 
 struct bpfhv_txq {
 	struct bpfhv_info		*bi;
@@ -641,12 +647,7 @@ BPF_CALL_1(bpf_hv_rx_pkt_alloc, struct bpfhv_rx_context *, ctx)
 		dma_unmap_single(rxq->bi->dev, (dma_addr_t)rxb->paddr,
 				rxb->len, DMA_FROM_DEVICE);
 		if (i == 0) {
-			size_t bufsize = BPFHV_RX_PAD +
-					 BPFHV_RX_PKT_SZ;
-
-			bufsize = SKB_DATA_ALIGN(bufsize) +
-			    SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
-			skb = build_skb(kbuf, bufsize);
+			skb = build_skb(kbuf, BPFHV_RX_SKB_SZ);
 			if (unlikely(!skb)) {
 				put_page(virt_to_head_page(kbuf));
 			} else {
@@ -1504,18 +1505,13 @@ bpfhv_rx_refill(struct bpfhv_rxq *rxq, gfp_t gfp)
 
 		/* Prepare the context for publishing receive buffers. */
 		for (i = 0; i < n; i++) {
-			size_t bufsize = BPFHV_RX_PAD +
-					 BPFHV_RX_PKT_SZ;
 			struct bpfhv_rx_buf *rxb = ctx->bufs + i;
 			dma_addr_t dma;
 			void *kbuf;
 
 			/* We need to reserve space for shared info, and
 			 * make sure the sizes are properly aligned. */
-			bufsize = SKB_DATA_ALIGN(bufsize) +
-			    SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
-
-			if (unlikely(!skb_page_frag_refill(bufsize,
+			if (unlikely(!skb_page_frag_refill(BPFHV_RX_SKB_SZ,
 						alloc_frag, gfp))) {
 				oom = true;
 				break;
@@ -1524,7 +1520,7 @@ bpfhv_rx_refill(struct bpfhv_rxq *rxq, gfp_t gfp)
 			kbuf = (char *)page_address(alloc_frag->page) +
 				alloc_frag->offset;
 			get_page(alloc_frag->page);
-			alloc_frag->offset += bufsize;
+			alloc_frag->offset += BPFHV_RX_SKB_SZ;
 
 			dma = dma_map_single(dev, kbuf + BPFHV_RX_PAD,
 					     BPFHV_RX_PKT_SZ, DMA_FROM_DEVICE);
@@ -1534,7 +1530,7 @@ bpfhv_rx_refill(struct bpfhv_rxq *rxq, gfp_t gfp)
 			}
 			rxb->cookie = (uintptr_t)kbuf;
 			rxb->paddr = (uintptr_t)dma;
-			rxb->len = bufsize;
+			rxb->len = BPFHV_RX_SKB_SZ;
 		}
 		ctx->num_bufs = i;
 		rxq->rx_free_bufs -= i;
