@@ -67,6 +67,9 @@ struct bpfhv_info {
 	/* Maximum number of bufs available for transmission. */
 	size_t				tx_bufs;
 
+	/* Is LRO enabled? */
+	bool				lro;
+
 	/* Variable needed to use netif logging macros (netif_info,
 	 * netif_err, etc.). */
 	int				msg_enable;
@@ -110,7 +113,7 @@ struct bpfhv_rxq {
 #define BPFHV_RX_PKT_SZ	(ETH_HLEN + VLAN_HLEN + ETH_DATA_LEN)
 /* Bytes to allocate from the frag allocator in order to build a complete
  * skb (including data and shared info). */
-#define BPFHV_RX_SKB_SZ	(SKB_DATA_ALIGN(BPFHV_RX_PAD + BPFHV_RX_PKT_SZ) \
+#define BPFHV_RX_SKB_TRUESIZE	(SKB_DATA_ALIGN(BPFHV_RX_PAD + BPFHV_RX_PKT_SZ) \
 			+ SKB_DATA_ALIGN(sizeof(struct skb_shared_info)))
 
 struct bpfhv_txq {
@@ -317,13 +320,14 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		BPFHV_F_TSOv4 | BPFHV_F_TCPv4_LRO | BPFHV_F_TSOv6 |
 		BPFHV_F_TCPv6_LRO);
 	writel(features, regaddr + BPFHV_REG_FEATURES);
+	netdev->needed_headroom = 0;
+	bi->lro = false;
 	netdev->features = NETIF_F_HIGHDMA;
 	netdev->hw_features = 0;
 	if (features & BPFHV_F_SG) {
 		netdev->features |= NETIF_F_SG;
 		netdev->hw_features |= NETIF_F_SG;
 	}
-	netdev->needed_headroom = 0;
 	if (features & BPFHV_F_TX_CSUM) {
 		netdev->hw_features |= NETIF_F_HW_CSUM;
 		netdev->features |= NETIF_F_HW_CSUM;
@@ -342,8 +346,11 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (features & (BPFHV_F_TCPv4_LRO | BPFHV_F_TCPv6_LRO)) {
 		netdev->hw_features |= NETIF_F_LRO;
 		netdev->features |= NETIF_F_LRO;
+		bi->lro = true;
 	}
 	netdev->vlan_features = netdev->features;
+	netdev->min_mtu = ETH_MIN_MTU;
+	netdev->max_mtu = ETH_DATA_LEN;
 
 	/* Prepare transmit/receive eBPF programs and the associated
 	 * contexts. */
@@ -640,6 +647,7 @@ BPF_CALL_1(bpf_hv_rx_pkt_alloc, struct bpfhv_rx_context *, ctx)
 {
 	struct bpfhv_rxq *rxq = RXQ_FROM_CTX(ctx);
 	struct sk_buff *skb = NULL;
+	bool lro = rxq->bi->lro;
 	int i;
 
 	if (unlikely(ctx->num_bufs == 0)) {
@@ -653,17 +661,20 @@ BPF_CALL_1(bpf_hv_rx_pkt_alloc, struct bpfhv_rx_context *, ctx)
 		dma_unmap_single(rxq->bi->dev, (dma_addr_t)rxb->paddr,
 				rxb->len, DMA_FROM_DEVICE);
 		if (i == 0) {
-			skb = build_skb(kbuf, BPFHV_RX_SKB_SZ);
-			if (unlikely(!skb)) {
-				put_page(virt_to_head_page(kbuf));
+			if (lro) {
+				/* TODO */
 			} else {
-				skb_reserve(skb, BPFHV_RX_PAD);
-				skb_put(skb, rxb->len);
-				ctx->packet = (uintptr_t)skb;
+				skb = build_skb(kbuf, BPFHV_RX_SKB_TRUESIZE);
+				if (unlikely(!skb)) {
+					put_page(virt_to_head_page(kbuf));
+				} else {
+					skb_reserve(skb, BPFHV_RX_PAD);
+					skb_put(skb, rxb->len);
+					ctx->packet = (uintptr_t)skb;
+				}
 			}
 		} else {
-			/* TODO handle all the fragments. */
-			BUG_ON(true);
+			/* TODO handle all the fragments (lro == true). */
 		}
 	}
 
@@ -1358,7 +1369,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		"txp(%u bytes) --> %d\n", skb->len, ret);
 
 #ifdef USE_NAPI
-	/* Enable the interrupts to clean this publushed buffer once
+	/* Enable the interrupts to clean this published buffer once
 	 * transmitted. */
 	ctx->min_completed_bufs = i;
 	BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_INTRS], ctx);
@@ -1512,12 +1523,22 @@ bpfhv_rx_refill(struct bpfhv_rxq *rxq, gfp_t gfp)
 		/* Prepare the context for publishing receive buffers. */
 		for (i = 0; i < n; i++) {
 			struct bpfhv_rx_buf *rxb = ctx->bufs + i;
+			size_t truesize, bufsize, pad;
 			dma_addr_t dma;
 			void *kbuf;
 
+			if (bi->lro) {
+				truesize = bufsize = PAGE_SIZE;
+				pad = 0;
+			} else {
+				truesize = BPFHV_RX_SKB_TRUESIZE;
+				bufsize = BPFHV_RX_PKT_SZ;
+				pad = BPFHV_RX_PAD;
+			}
+
 			/* We need to reserve space for shared info, and
 			 * make sure the sizes are properly aligned. */
-			if (unlikely(!skb_page_frag_refill(BPFHV_RX_SKB_SZ,
+			if (unlikely(!skb_page_frag_refill(truesize,
 						alloc_frag, gfp))) {
 				oom = true;
 				break;
@@ -1526,17 +1547,17 @@ bpfhv_rx_refill(struct bpfhv_rxq *rxq, gfp_t gfp)
 			kbuf = (char *)page_address(alloc_frag->page) +
 				alloc_frag->offset;
 			get_page(alloc_frag->page);
-			alloc_frag->offset += BPFHV_RX_SKB_SZ;
+			alloc_frag->offset += truesize;
 
-			dma = dma_map_single(dev, kbuf + BPFHV_RX_PAD,
-					     BPFHV_RX_PKT_SZ, DMA_FROM_DEVICE);
+			dma = dma_map_single(dev, kbuf + pad,
+					     bufsize, DMA_FROM_DEVICE);
 			if (unlikely(dma_mapping_error(dev, dma))) {
 				put_page(virt_to_head_page(kbuf));
 				break;
 			}
 			rxb->cookie = (uintptr_t)kbuf;
 			rxb->paddr = (uintptr_t)dma;
-			rxb->len = BPFHV_RX_SKB_SZ;
+			rxb->len = bufsize;
 		}
 		ctx->num_bufs = i;
 		rxq->rx_free_bufs -= i;
