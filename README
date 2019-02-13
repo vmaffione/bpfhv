@@ -9,8 +9,14 @@ Some goals:
         - You can define a metadata format (e.g. virtio-net header)
           that fits the specific hardware NIC features used by a
           cloud provider.
+        - Let the provider inject code to encrypt/decrypt the payload,
+          together with the hardcoded key. The encrypt/decrypt routines
+          can be helper functions that take as argument the OS packet
+          pointer and the key.
 
 TODO (driver):
+        - Add vaddr field to context buffers. Needed to manipulate
+          buffers from eBPF program.
 
 TODO (qemu):
         - Replace cpu_physical_memory_[un]map() with dma_memory_[un]map()
