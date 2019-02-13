@@ -310,13 +310,19 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	netif_set_real_num_tx_queues(netdev, queue_pairs);
 	netif_set_real_num_rx_queues(netdev, queue_pairs);
 
-	/* Negotiate features with the hypervisor. */
+	/* Negotiate features with the hypervisor, and report them to
+	 * the kernel. */
 	features = readl(regaddr + BPFHV_REG_FEATURES);
-	features &= (BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM | BPFHV_F_TSOv4 |
-		BPFHV_F_TCPv4_LRO | BPFHV_F_TSOv6 | BPFHV_F_TCPv6_LRO);
+	features &= (BPFHV_F_SG | BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM |
+		BPFHV_F_TSOv4 | BPFHV_F_TCPv4_LRO | BPFHV_F_TSOv6 |
+		BPFHV_F_TCPv6_LRO);
 	writel(features, regaddr + BPFHV_REG_FEATURES);
-	netdev->features = NETIF_F_HIGHDMA | NETIF_F_SG;
-	netdev->hw_features = NETIF_F_SG;
+	netdev->features = NETIF_F_HIGHDMA;
+	netdev->hw_features = 0;
+	if (features & BPFHV_F_SG) {
+		netdev->features |= NETIF_F_SG;
+		netdev->hw_features |= NETIF_F_SG;
+	}
 	netdev->needed_headroom = 0;
 	if (features & BPFHV_F_TX_CSUM) {
 		netdev->hw_features |= NETIF_F_HW_CSUM;
