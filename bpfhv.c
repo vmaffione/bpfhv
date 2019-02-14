@@ -692,7 +692,8 @@ BPF_CALL_1(bpf_hv_rx_pkt_alloc, struct bpfhv_rx_context *, ctx)
 				int offset = kbuf - page_address(page) + copy;
 
 				skb_add_rx_frag(skb, /*idx=*/0,
-					page, offset, left, PAGE_SIZE);
+					page, offset, /*len=*/left,
+					/*truesize=*/PAGE_SIZE);
 			} else {
 				/* Small packet: return the page
 				 * fragment to the system. */

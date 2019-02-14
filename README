@@ -13,6 +13,11 @@ Some goals:
           together with the hardcoded key. The encrypt/decrypt routines
           can be helper functions that take as argument the OS packet
           pointer and the key.
+	- Simplification of device paravirtualization. Fixed datapath
+	  ABI means that you need to be backward compatible. Look at
+	  virtio implementation in Linux 4.20: it needs to support
+	  both split and packet ring --> complex, error prone, less
+	  efficient.
 
 TODO (driver):
         - Add vaddr field to context buffers. Needed to manipulate
