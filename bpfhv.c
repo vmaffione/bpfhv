@@ -672,42 +672,61 @@ BPF_CALL_1(bpf_hv_rx_pkt_alloc, struct bpfhv_rx_context *, ctx)
 					offset, rxb->len, truesize);
 		} else if (lro) {
 			/* First fragment of a packet in LRO mode. */
+			size_t copy = rxb->len;
+			size_t left;
+
 			napi_alloc_skb(&rxq->napi, GOOD_COPY_LEN);
 			if (unlikely(!skb)) {
 				put_page(page);
+				goto err;
+			}
+
+			if (copy > skb_tailroom(skb)) {
+				copy = skb_tailroom(skb);
+			}
+			skb_put_data(skb, kbuf, copy);
+
+			left = rxb->len - copy;
+			if (left) {
+				/* Append the remainder as a paged fragment. */
+				int offset = kbuf - page_address(page) + copy;
+
+				skb_add_rx_frag(skb, /*idx=*/0,
+					page, offset, left, PAGE_SIZE);
 			} else {
-				size_t copy = rxb->len;
-				size_t left;
-
-				if (copy > skb_tailroom(skb)) {
-					copy = skb_tailroom(skb);
-				}
-				skb_put_data(skb, kbuf, copy);
-
-				left = rxb->len - copy;
-				if (left) {
-					int offset = kbuf - page_address(page) + copy;
-
-					skb_add_rx_frag(skb, /*idx=*/0,
-						page, offset, left, PAGE_SIZE);
-				} else {
-					put_page(page);
-				}
+				/* Small packet: return the page
+				 * fragment to the system. */
+				put_page(page);
 			}
 		} else {
 			/* First fragment of a packet in non-LRO mode. */
 			skb = build_skb(kbuf, truesize);
 			if (unlikely(!skb)) {
 				put_page(page);
-			} else {
-				skb_reserve(skb, BPFHV_RX_PAD);
-				skb_put(skb, rxb->len);
-				ctx->packet = (uintptr_t)skb;
+				goto err;
 			}
+			skb_reserve(skb, BPFHV_RX_PAD);
+			skb_put(skb, rxb->len);
 		}
 	}
 
-	return skb ? 0 : -ENOMEM;
+	ctx->packet = (uintptr_t)skb;
+
+	return 0;
+err:
+	/* Only the first iteration of the loop above can fail, so we can
+	 * start from the second one. */
+	for (i = 1; i < ctx->num_bufs; i++) {
+		struct bpfhv_rx_buf *rxb = ctx->bufs + i;
+		void *kbuf = (void *)rxb->cookie;
+		struct page *page = virt_to_head_page(kbuf);
+
+		dma_unmap_single(rxq->bi->dev, (dma_addr_t)rxb->paddr,
+				rxb->len, DMA_FROM_DEVICE);
+		put_page(page);
+	}
+
+	return -ENOMEM;
 }
 
 BPF_CALL_3(bpf_hv_pkt_l4_csum_md_get, struct bpfhv_tx_context *, ctx,
