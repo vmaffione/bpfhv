@@ -20,8 +20,15 @@ Some goals:
 	  efficient.
 
 TODO (driver):
-        - Add vaddr field to context buffers. Needed to manipulate
-          buffers from eBPF program.
+	- Try to replace dma_map_single() with dma_map_page() on
+	  the RX datapath ? Not sure this is relevant.
+	- What if the eBPF program needs to modify the SG layout,
+	  e.g., for encapsulation or encryption? This would require
+	  changing the paddr/vaddr/len in the buffer descriptors,
+	  and DMA mapping and unmapping... So maybe we should ask
+	  the eBPF program to DMA map/unmap so, that it can do
+	  that after encapsulation or encryption (i.e. once
+	  the SG layout is stable).
 
 TODO (qemu):
         - Replace cpu_physical_memory_[un]map() with dma_memory_[un]map()

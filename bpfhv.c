@@ -1379,6 +1379,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		return NETDEV_TX_OK;
 	}
 	ctx->bufs[0].paddr = dma;
+	ctx->bufs[0].vaddr = (uintptr_t)skb->data;
 	ctx->bufs[0].len = len;
 	ctx->bufs[0].cookie = ((uintptr_t)skb) | /* not mapped as a page */0;
 	i = 1;
@@ -1407,6 +1408,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 			return NETDEV_TX_OK;
 		}
 		ctx->bufs[i].paddr = dma;
+		ctx->bufs[i].vaddr = (uintptr_t)skb_frag_address(frag);
 		ctx->bufs[i].len = len;
 		ctx->bufs[i].cookie = F_MAPPED_AS_PAGE;
 	}
@@ -1606,6 +1608,7 @@ bpfhv_rx_refill(struct bpfhv_rxq *rxq, gfp_t gfp)
 			}
 			rxb->cookie = (uintptr_t)kbuf;
 			rxb->paddr = (uintptr_t)dma;
+			rxb->vaddr = (uintptr_t)kbuf;
 			rxb->len = bufsize;
 		}
 		ctx->num_bufs = i;

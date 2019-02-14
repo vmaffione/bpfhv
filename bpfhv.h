@@ -33,6 +33,7 @@
 struct bpfhv_tx_buf {
 	uint64_t cookie;
 	uint64_t paddr;
+	uint64_t vaddr;
 	uint32_t len;
 	uint32_t reserved;
 };
@@ -77,6 +78,7 @@ struct bpfhv_tx_context {
 struct bpfhv_rx_buf {
 	uint64_t cookie;
 	uint64_t paddr;
+	uint64_t vaddr;
 	uint32_t len;
 	uint32_t reserved;
 };
