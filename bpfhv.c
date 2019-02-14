@@ -675,7 +675,7 @@ BPF_CALL_1(bpf_hv_rx_pkt_alloc, struct bpfhv_rx_context *, ctx)
 			size_t copy = rxb->len;
 			size_t left;
 
-			napi_alloc_skb(&rxq->napi, GOOD_COPY_LEN);
+			skb = napi_alloc_skb(&rxq->napi, GOOD_COPY_LEN);
 			if (unlikely(!skb)) {
 				put_page(page);
 				goto err;
