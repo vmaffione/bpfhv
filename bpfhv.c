@@ -643,11 +643,14 @@ bpfhv_tx_intr(int irq, void *data)
 #define TXQ_FROM_CTX(_ctx)\
 	((struct bpfhv_txq *)((uintptr_t)((_ctx)->guest_priv)))
 
+#define GOOD_COPY_LEN	128
+
 BPF_CALL_1(bpf_hv_rx_pkt_alloc, struct bpfhv_rx_context *, ctx)
 {
 	struct bpfhv_rxq *rxq = RXQ_FROM_CTX(ctx);
 	struct sk_buff *skb = NULL;
 	bool lro = rxq->bi->lro;
+	size_t truesize = lro ? PAGE_SIZE : BPFHV_RX_SKB_TRUESIZE;
 	int i;
 
 	if (unlikely(ctx->num_bufs == 0)) {
@@ -657,24 +660,50 @@ BPF_CALL_1(bpf_hv_rx_pkt_alloc, struct bpfhv_rx_context *, ctx)
 	for (i = 0; i < ctx->num_bufs; i++) {
 		struct bpfhv_rx_buf *rxb = ctx->bufs + i;
 		void *kbuf = (void *)rxb->cookie;
+		struct page *page = virt_to_head_page(kbuf);
 
 		dma_unmap_single(rxq->bi->dev, (dma_addr_t)rxb->paddr,
 				rxb->len, DMA_FROM_DEVICE);
-		if (i == 0) {
-			if (lro) {
-				/* TODO */
+		if (i != 0) {
+			/* A fragment after the first one. */
+			int offset = kbuf - page_address(page);
+
+			skb_add_rx_frag(skb, skb_shinfo(skb)->nr_frags, page,
+					offset, rxb->len, truesize);
+		} else if (lro) {
+			/* First fragment of a packet in LRO mode. */
+			napi_alloc_skb(&rxq->napi, GOOD_COPY_LEN);
+			if (unlikely(!skb)) {
+				put_page(page);
 			} else {
-				skb = build_skb(kbuf, BPFHV_RX_SKB_TRUESIZE);
-				if (unlikely(!skb)) {
-					put_page(virt_to_head_page(kbuf));
+				size_t copy = rxb->len;
+				size_t left;
+
+				if (copy > skb_tailroom(skb)) {
+					copy = skb_tailroom(skb);
+				}
+				skb_put_data(skb, kbuf, copy);
+
+				left = rxb->len - copy;
+				if (left) {
+					int offset = kbuf - page_address(page) + copy;
+
+					skb_add_rx_frag(skb, /*idx=*/0,
+						page, offset, left, PAGE_SIZE);
 				} else {
-					skb_reserve(skb, BPFHV_RX_PAD);
-					skb_put(skb, rxb->len);
-					ctx->packet = (uintptr_t)skb;
+					put_page(page);
 				}
 			}
 		} else {
-			/* TODO handle all the fragments (lro == true). */
+			/* First fragment of a packet in non-LRO mode. */
+			skb = build_skb(kbuf, truesize);
+			if (unlikely(!skb)) {
+				put_page(page);
+			} else {
+				skb_reserve(skb, BPFHV_RX_PAD);
+				skb_put(skb, rxb->len);
+				ctx->packet = (uintptr_t)skb;
+			}
 		}
 	}
 
