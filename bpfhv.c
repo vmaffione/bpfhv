@@ -353,7 +353,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	netdev->max_mtu = ETH_DATA_LEN;
 
 	/* Prepare transmit/receive eBPF programs and the associated
-	 * contexts. */
+	 * contexts. This must be done after feature negotiation. */
 	ret = bpfhv_programs_setup(bi);
 	if (ret) {
 		goto err_prog;
