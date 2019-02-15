@@ -36,6 +36,14 @@ static int debug = -1; /* use DEFAULT_MSG_ENABLE by default */
 module_param(debug, int, /* perm = allow override on modprobe */0);
 MODULE_PARM_DESC(debug, "Debug level (0=none,...,16=all)");
 
+static bool csum = true;
+module_param(csum, bool, /* perm = allow override on modprobe */0);
+MODULE_PARM_DESC(csum, "Enable checksum offload");
+
+static bool gso = true;
+module_param(gso, bool, /* perm = allow override on modprobe */0);
+MODULE_PARM_DESC(gso, "Enable generic segmentation offload");
+
 struct bpfhv_rxq;
 struct bpfhv_txq;
 
@@ -190,6 +198,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	size_t doorbell_size;
 	u8* __iomem regaddr;
 	uint32_t features;
+	uint32_t myfeatures;
 	int bars;
 	int ret;
 	int i;
@@ -315,10 +324,16 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	/* Negotiate features with the hypervisor, and report them to
 	 * the kernel. */
+	myfeatures = BPFHV_F_SG;
+	if (csum) {
+		myfeatures |= BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM;
+		if (gso) {
+			myfeatures |= BPFHV_F_TSOv4 | BPFHV_F_TCPv4_LRO
+				   |  BPFHV_F_TSOv6 | BPFHV_F_TCPv6_LRO;
+		}
+	}
 	features = readl(regaddr + BPFHV_REG_FEATURES);
-	features &= (BPFHV_F_SG | BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM |
-		BPFHV_F_TSOv4 | BPFHV_F_TCPv4_LRO | BPFHV_F_TSOv6 |
-		BPFHV_F_TCPv6_LRO);
+	features &= myfeatures;
 	writel(features, regaddr + BPFHV_REG_FEATURES);
 	netdev->needed_headroom = 0;
 	bi->lro = false;
