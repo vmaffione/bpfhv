@@ -1655,7 +1655,7 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 				"rxc() failed --> %d\n", ret);
 			break;
 		}
-		rxq->rx_free_bufs++;
+		rxq->rx_free_bufs += ctx->num_bufs;
 
 		skb = (struct sk_buff *)ctx->packet;
 		if (unlikely(!skb)) {
