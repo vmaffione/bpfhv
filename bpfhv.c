@@ -164,7 +164,8 @@ static struct bpf_prog	*bpfhv_prog_alloc(struct bpfhv_info *bi,
 					struct bpf_insn *insns,
 					size_t insn_count);
 static int		bpfhv_programs_teardown(struct bpfhv_info *bi);
-static int		bpfhv_queues_dump(struct bpfhv_info *bi);
+static int		bpfhv_queues_dump(struct bpfhv_info *bi,
+					  const char *prefix);
 
 static int		bpfhv_open(struct net_device *netdev);
 static int		bpfhv_resources_alloc(struct bpfhv_info *bi);
@@ -605,8 +606,6 @@ bpfhv_upgrade(struct work_struct *w)
 	/* Stop all transmit queues (locked version of
 	 * netif_tx_stop_all_queues()). */
 	netif_tx_disable(bi->netdev);
-
-	bpfhv_queues_dump(bi);
 
 	rtnl_lock();
 
@@ -1164,7 +1163,7 @@ bpfhv_programs_teardown(struct bpfhv_info *bi)
 }
 
 static int
-bpfhv_queues_dump(struct bpfhv_info *bi)
+bpfhv_queues_dump(struct bpfhv_info *bi, const char *prefix)
 {
 	uint32_t *p;
 	char *dump;
@@ -1188,7 +1187,7 @@ bpfhv_queues_dump(struct bpfhv_info *bi)
 		*p = readl(bi->regaddr + BPFHV_REG_DUMP_INPUT);
 	}
 
-	printk("%s", dump);
+	printk("%s:\n%s", prefix, dump);
 	kfree(dump);
 
 	return 0;
@@ -1293,7 +1292,9 @@ bpfhv_close(struct net_device *netdev)
 		napi_disable(&txq->napi);
 	}
 
+	bpfhv_queues_dump(bi, "pre-dealloc");
 	bpfhv_resources_dealloc(bi);
+	bpfhv_queues_dump(bi, "post-dealloc");
 
 	return 0;
 }
