@@ -180,12 +180,19 @@ static int		bpfhv_rx_poll(struct napi_struct *napi, int budget);
 static struct net_device_stats *bpfhv_get_stats(struct net_device *netdev);
 static int		bpfhv_change_mtu(struct net_device *netdev, int new_mtu);
 
+static void		bpfhv_get_drvinfo(struct net_device *netdev,
+					  struct ethtool_drvinfo *drvinfo);
+
 static const struct net_device_ops bpfhv_netdev_ops = {
 	.ndo_open			= bpfhv_open,
 	.ndo_stop			= bpfhv_close,
 	.ndo_start_xmit			= bpfhv_start_xmit,
 	.ndo_get_stats			= bpfhv_get_stats,
 	.ndo_change_mtu			= bpfhv_change_mtu,
+};
+
+static const struct ethtool_ops bpfhv_ethtool_ops = {
+	.get_drvinfo = bpfhv_get_drvinfo,
 };
 
 static int
@@ -367,6 +374,8 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	netdev->vlan_features = netdev->features;
 	netdev->min_mtu = ETH_MIN_MTU;
 	netdev->max_mtu = ETH_DATA_LEN;
+
+	netdev->ethtool_ops = &bpfhv_ethtool_ops;
 
 	/* Prepare transmit/receive eBPF programs and the associated
 	 * contexts. This must be done after feature negotiation. */
@@ -1753,6 +1762,19 @@ bpfhv_change_mtu(struct net_device *netdev, int new_mtu)
 	netdev->mtu = new_mtu;
 
 	return 0;
+}
+
+static void
+bpfhv_get_drvinfo(struct net_device *netdev, struct ethtool_drvinfo *drvinfo)
+{
+	struct bpfhv_info *bi = netdev_priv(netdev);
+
+	strlcpy(drvinfo->driver, "bpfhv",
+		sizeof(drvinfo->driver));
+	strlcpy(drvinfo->version, "0.1",
+		sizeof(drvinfo->version));
+	strlcpy(drvinfo->bus_info, pci_name(bi->pdev),
+		sizeof(drvinfo->bus_info));
 }
 
 /* List of (VendorID, DeviceID) pairs supported by this driver. */
