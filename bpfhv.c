@@ -164,6 +164,7 @@ static struct bpf_prog	*bpfhv_prog_alloc(struct bpfhv_info *bi,
 					struct bpf_insn *insns,
 					size_t insn_count);
 static int		bpfhv_programs_teardown(struct bpfhv_info *bi);
+static int		bpfhv_queues_dump(struct bpfhv_info *bi);
 
 static int		bpfhv_open(struct net_device *netdev);
 static int		bpfhv_resources_alloc(struct bpfhv_info *bi);
@@ -595,6 +596,8 @@ bpfhv_upgrade(struct work_struct *w)
 	/* Stop all transmit queues (locked version of
 	 * netif_tx_stop_all_queues()). */
 	netif_tx_disable(bi->netdev);
+
+	bpfhv_queues_dump(bi);
 
 	rtnl_lock();
 
@@ -1147,6 +1150,37 @@ bpfhv_programs_teardown(struct bpfhv_info *bi)
 		}
 		ctx_paddr_write(bi, bi->num_rx_queues + i, 0);
 	}
+
+	return 0;
+}
+
+static int
+bpfhv_queues_dump(struct bpfhv_info *bi)
+{
+	uint32_t *p;
+	char *dump;
+	int bytes;
+	int i;
+
+	writel(BPFHV_CTRL_QUEUES_DUMP, bi->regaddr + BPFHV_REG_CTRL);
+	bytes = (int)readl(bi->regaddr + BPFHV_REG_DUMP_LEN);
+	if (bytes > PAGE_SIZE || bytes <= 0) {
+		return -EIO;
+	}
+
+	dump = kmalloc(bytes + 1, GFP_KERNEL);
+	if (!dump) {
+		return -ENOMEM;
+	}
+	dump[bytes] = '\0';
+
+	for (i = 0, p = (uint32_t *)dump; i < bytes; i += 4, p++) {
+		writel(i, bi->regaddr + BPFHV_REG_DUMP_OFS);
+		*p = readl(bi->regaddr + BPFHV_REG_DUMP_INPUT);
+	}
+
+	printk("%s", dump);
+	kfree(dump);
 
 	return 0;
 }

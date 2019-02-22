@@ -174,12 +174,17 @@ static void *BPFHV_FUNC(pkt_alloc, struct bpfhv_rx_context *ctx);
  *   - bit 2: upgrade ready: writing 1 this bit tells the hypervisor that the
  *            guest is ready to proceed with the program upgrade; the
  *            hypervisor will then load the new program in the program MMIO
- *            and reset the BPFHV_STATUS_UPGRADE bit the status register;
+ *            and reset the BPFHV_STATUS_UPGRADE bit the status register
+ *   - bit 3: dump queues: ask the hypervisor to dump the state of all the
+ *            receive and transmit queues in a human readable format; the
+ *            resulting C string can be read from the BPFHV_DUMP_INPUT
+ *            register
  */
 #define BPFHV_REG_CTRL			4
 #define		BPFHV_CTRL_RX_ENABLE		(1 << 0)
 #define		BPFHV_CTRL_TX_ENABLE		(1 << 1)
 #define		BPFHV_CTRL_UPGRADE_READY	(1 << 2)
+#define		BPFHV_CTRL_QUEUES_DUMP		(1 << 3)
 
 /* Device MAC address: the least significant 32 bits of the address are taken
  * from MAC_LO, while the most significant 16 bits are taken from the least
@@ -283,8 +288,13 @@ enum {
 /* Guest handles LRO packets (UDP reception). */
 #define		BPFHV_F_UDP_LRO		(1 << 8)
 
+/* Debug registers. */
+#define		BPFHV_REG_DUMP_LEN	80
+#define		BPFHV_REG_DUMP_INPUT	84
+#define		BPFHV_REG_DUMP_OFS	88
+
 /* Marker for the end of valid registers, and size of the I/O region. */
-#define BPFHV_REG_END			80
+#define BPFHV_REG_END			92
 #define BPFHV_REG_MASK			0xff
 
 #endif  /* __BPFHV_H__ */
