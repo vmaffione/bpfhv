@@ -417,8 +417,6 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_irqs;
 	}
 
-	netif_carrier_on(netdev);
-
 	return 0;
 
 err_irqs:
@@ -601,10 +599,6 @@ bpfhv_upgrade(struct work_struct *w)
 		return; /* nothing to do */
 	}
 	netif_info(bi, drv, bi->netdev, "Program upgrade\n");
-
-	/* Stop all transmit queues (locked version of
-	 * netif_tx_stop_all_queues()). */
-	netif_tx_disable(bi->netdev);
 
 	rtnl_lock();
 
@@ -1239,6 +1233,7 @@ bpfhv_open(struct net_device *netdev)
 		return -EIO;
 	}
 
+	netif_carrier_on(netdev);
 	netif_tx_start_all_queues(netdev);
 
 	return 0;
@@ -1271,6 +1266,11 @@ bpfhv_close(struct net_device *netdev)
 	if (bi->broken) {
 		return 0;
 	}
+
+	/* Stop all transmit queues (locked version of
+	 * netif_tx_stop_all_queues()). */
+	netif_carrier_off(netdev);
+	netif_tx_disable(netdev);
 
 	/* Disable transmit and receive in the hardware. */
 	writel(BPFHV_CTRL_RX_DISABLE | BPFHV_CTRL_TX_DISABLE,
