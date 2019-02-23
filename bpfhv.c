@@ -1267,26 +1267,33 @@ bpfhv_close(struct net_device *netdev)
 		return 0;
 	}
 
-	/* Stop all transmit queues (locked version of
-	 * netif_tx_stop_all_queues()). */
-	netif_carrier_off(netdev);
-	netif_tx_disable(netdev);
-
-	/* Disable transmit and receive in the hardware. */
+	/* Disable transmit and receive in the hardware. From now on
+	 * no interrupts can be generated. */
 	writel(BPFHV_CTRL_RX_DISABLE | BPFHV_CTRL_TX_DISABLE,
 	       bi->regaddr + BPFHV_REG_CTRL);
 
-	/* Disable NAPI. */
-	for (i = 0; i < bi->num_rx_queues; i++) {
-		struct bpfhv_rxq *rxq = bi->rxqs + i;
-
-		napi_disable(&rxq->napi);
-	}
-
+	/* Disable transmit NAPI (and wait for already scheduled
+	 * callbacks). Since transmit interrupts are disabled at
+	 * this point, NAPI cannot be scheduled again. */
 	for (i = 0; i < bi->num_tx_queues; i++) {
 		struct bpfhv_txq *txq = bi->txqs + i;
 
 		napi_disable(&txq->napi);
+	}
+
+	/* Stop all transmit queues (netif_tx_disable() is the locked
+	 * version of netif_tx_stop_all_queues()). This must be done
+	 * after disabling transmit NAPI, because the latter can call
+	 * netif_tx_wake_queue(), and thus undo the stop. */
+	netif_carrier_off(netdev);
+	netif_tx_disable(netdev);
+
+	/* Disable receive NAPI (and wait for already scheduled
+	 * callbacks. */
+	for (i = 0; i < bi->num_rx_queues; i++) {
+		struct bpfhv_rxq *rxq = bi->rxqs + i;
+
+		napi_disable(&rxq->napi);
 	}
 
 	bpfhv_queues_dump(bi, "pre-dealloc");
