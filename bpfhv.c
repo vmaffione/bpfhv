@@ -1281,7 +1281,6 @@ bpfhv_close(struct net_device *netdev)
 		struct bpfhv_rxq *rxq = bi->rxqs + i;
 
 		napi_disable(&rxq->napi);
-
 	}
 
 	for (i = 0; i < bi->num_tx_queues; i++) {
