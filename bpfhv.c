@@ -595,7 +595,6 @@ bpfhv_upgrade(struct work_struct *w)
 	struct bpfhv_info *bi = container_of(w, struct bpfhv_info,
 						upgrade_work);
 	uint32_t status = readl(bi->regaddr + BPFHV_REG_STATUS);
-	uint32_t ctrl;
 	int ret;
 
 	if (!(status & BPFHV_STATUS_UPGRADE)) {
@@ -617,9 +616,7 @@ bpfhv_upgrade(struct work_struct *w)
 
 	/* Tell the hypervisor that we are ready to proceed with
 	 * the upgrade. */
-	ctrl = readl(bi->regaddr + BPFHV_REG_CTRL);
-	writel(ctrl | BPFHV_CTRL_UPGRADE_READY,
-			bi->regaddr + BPFHV_REG_CTRL);
+	writel(BPFHV_CTRL_UPGRADE_READY, bi->regaddr + BPFHV_REG_CTRL);
 
 	/* Do the upgrade. */
 	ret = bpfhv_programs_setup(bi);
@@ -1276,7 +1273,8 @@ bpfhv_close(struct net_device *netdev)
 	}
 
 	/* Disable transmit and receive in the hardware. */
-	writel(0, bi->regaddr + BPFHV_REG_CTRL);
+	writel(BPFHV_CTRL_RX_DISABLE | BPFHV_CTRL_TX_DISABLE,
+	       bi->regaddr + BPFHV_REG_CTRL);
 
 	/* Disable NAPI. */
 	for (i = 0; i < bi->num_rx_queues; i++) {

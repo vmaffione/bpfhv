@@ -165,17 +165,18 @@ static void *BPFHV_FUNC(pkt_alloc, struct bpfhv_rx_context *ctx);
 #define		BPFHV_STATUS_TX_ENABLED (1 << 3)
 
 /*
- * Device control register (guest read/write, hv read only):
- *   - bit 0: receive enable: receive operation is enabled if set, and disabled
- *            if reset; setting may fail if receove contexts are not valid
- *   - bit 1: transmit enable: transmit operation is enabled if set, and
- *            disabled if reset; setting may fail if transmit contexts are
- *            not valid
- *   - bit 2: upgrade ready: writing 1 this bit tells the hypervisor that the
+ * Device control register (guest write only, hv read only):
+ *   - bit 0: receive enable: enable receive operation in the hardware;
+ *            setting may fail if receive contexts are not valid
+ *   - bit 1: transmit enable: enable transmit operation in the hardware;
+ *            setting may fail if transmit contexts are not valid
+ *   - bit 2: receive enable: disable receive operation in the hardware;
+ *   - bit 3: transmit enable: disable transmit operation in the hardware;
+ *   - bit 4: upgrade ready: writing 1 this bit tells the hypervisor that the
  *            guest is ready to proceed with the program upgrade; the
  *            hypervisor will then load the new program in the program MMIO
  *            and reset the BPFHV_STATUS_UPGRADE bit the status register
- *   - bit 3: dump queues: ask the hypervisor to dump the state of all the
+ *   - bit 5: dump queues: ask the hypervisor to dump the state of all the
  *            receive and transmit queues in a human readable format; the
  *            resulting C string can be read from the BPFHV_DUMP_INPUT
  *            register
@@ -183,8 +184,10 @@ static void *BPFHV_FUNC(pkt_alloc, struct bpfhv_rx_context *ctx);
 #define BPFHV_REG_CTRL			4
 #define		BPFHV_CTRL_RX_ENABLE		(1 << 0)
 #define		BPFHV_CTRL_TX_ENABLE		(1 << 1)
-#define		BPFHV_CTRL_UPGRADE_READY	(1 << 2)
-#define		BPFHV_CTRL_QUEUES_DUMP		(1 << 3)
+#define		BPFHV_CTRL_RX_DISABLE		(1 << 2)
+#define		BPFHV_CTRL_TX_DISABLE		(1 << 3)
+#define		BPFHV_CTRL_UPGRADE_READY	(1 << 4)
+#define		BPFHV_CTRL_QUEUES_DUMP		(1 << 5)
 
 /* Device MAC address: the least significant 32 bits of the address are taken
  * from MAC_LO, while the most significant 16 bits are taken from the least
