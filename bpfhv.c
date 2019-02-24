@@ -1279,6 +1279,10 @@ bpfhv_close(struct net_device *netdev)
 		struct bpfhv_txq *txq = bi->txqs + i;
 
 		napi_disable(&txq->napi);
+		/* The BPFHV_CTRL_TX_DISABLE command above may have
+		 * triggered synchronous transmission of some pending
+		 * buffers. Clean up just in case. */
+		bpfhv_tx_clean(txq, /*in_napi=*/false);
 	}
 
 	/* Stop all transmit queues (netif_tx_disable() is the locked
