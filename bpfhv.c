@@ -145,6 +145,7 @@ struct bpfhv_txq {
 	char irq_name[64];
 };
 
+static uint32_t		bpfhv_driver_features(struct bpfhv_info *bi);
 static int		bpfhv_probe(struct pci_dev *pdev,
 					const struct pci_device_id *id);
 static void		bpfhv_remove(struct pci_dev *pdev);
@@ -202,6 +203,23 @@ static const struct net_device_ops bpfhv_netdev_ops = {
 static const struct ethtool_ops bpfhv_ethtool_ops = {
 	.get_drvinfo = bpfhv_get_drvinfo,
 };
+
+/* Return the features supported by this driver (and enabled). */
+static uint32_t
+bpfhv_driver_features(struct bpfhv_info *bi)
+{
+	uint32_t driver_features = BPFHV_F_SG;
+
+	if (csum) {
+		driver_features |= BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM;
+		if (gso) {
+			driver_features |= BPFHV_F_TSOv4 | BPFHV_F_TCPv4_LRO
+				   |  BPFHV_F_TSOv6 | BPFHV_F_TCPv6_LRO;
+		}
+	}
+
+	return driver_features;
+}
 
 static int
 bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
@@ -443,18 +461,10 @@ static void
 bpfhv_negotiate_features(struct bpfhv_info *bi)
 {
 	struct net_device *netdev = bi->netdev;
-	uint32_t myfeatures = BPFHV_F_SG;
 	uint32_t features;
 
-	if (csum) {
-		myfeatures |= BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM;
-		if (gso) {
-			myfeatures |= BPFHV_F_TSOv4 | BPFHV_F_TCPv4_LRO
-				   |  BPFHV_F_TSOv6 | BPFHV_F_TCPv6_LRO;
-		}
-	}
 	features = readl(bi->regaddr + BPFHV_REG_FEATURES);
-	features &= myfeatures;
+	features &= bpfhv_driver_features(bi);
 	writel(features, bi->regaddr + BPFHV_REG_FEATURES);
 	netdev->needed_headroom = 0;
 	bi->lro = false;
@@ -1794,19 +1804,10 @@ static netdev_features_t
 bpfhv_fix_features(struct net_device *netdev, netdev_features_t features)
 {
 	struct bpfhv_info *bi = netdev_priv(netdev);
-	uint32_t driver_features = BPFHV_F_SG;
 	uint32_t hv_features;
 
-	if (csum) {
-		driver_features |= BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM;
-		if (gso) {
-			driver_features |= BPFHV_F_TSOv4 | BPFHV_F_TCPv4_LRO
-				   |  BPFHV_F_TSOv6 | BPFHV_F_TCPv6_LRO;
-		}
-	}
-
 	hv_features = readl(bi->regaddr + BPFHV_REG_FEATURES);
-	hv_features &= driver_features;
+	hv_features &= bpfhv_driver_features(bi);
 	writel(hv_features, bi->regaddr + BPFHV_REG_FEATURES);
 
 	if (!(hv_features & BPFHV_F_SG)) {
