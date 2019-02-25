@@ -145,7 +145,7 @@ struct bpfhv_txq {
 	char irq_name[64];
 };
 
-static uint32_t		bpfhv_driver_features(struct bpfhv_info *bi);
+static uint32_t		bpfhv_hv_features(struct bpfhv_info *bi);
 static int		bpfhv_probe(struct pci_dev *pdev,
 					const struct pci_device_id *id);
 static void		bpfhv_remove(struct pci_dev *pdev);
@@ -206,9 +206,10 @@ static const struct ethtool_ops bpfhv_ethtool_ops = {
 
 /* Return the features supported by this driver (and enabled). */
 static uint32_t
-bpfhv_driver_features(struct bpfhv_info *bi)
+bpfhv_hv_features(struct bpfhv_info *bi)
 {
 	uint32_t driver_features = BPFHV_F_SG;
+	uint32_t hv_features;
 
 	if (csum) {
 		driver_features |= BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM;
@@ -218,7 +219,10 @@ bpfhv_driver_features(struct bpfhv_info *bi)
 		}
 	}
 
-	return driver_features;
+
+	hv_features = readl(bi->regaddr + BPFHV_REG_FEATURES);
+
+	return hv_features & driver_features;
 }
 
 static int
@@ -463,8 +467,7 @@ bpfhv_negotiate_features(struct bpfhv_info *bi)
 	struct net_device *netdev = bi->netdev;
 	uint32_t features;
 
-	features = readl(bi->regaddr + BPFHV_REG_FEATURES);
-	features &= bpfhv_driver_features(bi);
+	features = bpfhv_hv_features(bi);
 	writel(features, bi->regaddr + BPFHV_REG_FEATURES);
 	netdev->needed_headroom = 0;
 	bi->lro = false;
@@ -1800,15 +1803,15 @@ bpfhv_change_mtu(struct net_device *netdev, int new_mtu)
 	return 0;
 }
 
+/* Check which features we can support, and remove the ones
+ * we cannot support from the 'features' input argument. */
 static netdev_features_t
 bpfhv_fix_features(struct net_device *netdev, netdev_features_t features)
 {
 	struct bpfhv_info *bi = netdev_priv(netdev);
 	uint32_t hv_features;
 
-	hv_features = readl(bi->regaddr + BPFHV_REG_FEATURES);
-	hv_features &= bpfhv_driver_features(bi);
-	writel(hv_features, bi->regaddr + BPFHV_REG_FEATURES);
+	hv_features = bpfhv_hv_features(bi);
 
 	if (!(hv_features & BPFHV_F_SG)) {
 		features &= ~NETIF_F_SG;
@@ -1839,9 +1842,17 @@ bpfhv_fix_features(struct net_device *netdev, netdev_features_t features)
 	return features;
 }
 
+/* This is called by netdev_update_features() after bpfhv_fix_features().
+ * Commit the selected features to the device. */
 static int
 bpfhv_set_features(struct net_device *netdev, netdev_features_t features)
 {
+	struct bpfhv_info *bi = netdev_priv(netdev);
+	uint32_t hv_features;
+
+	hv_features = bpfhv_hv_features(bi);
+	writel(hv_features, bi->regaddr + BPFHV_REG_FEATURES);
+
 	return 0;
 }
 
