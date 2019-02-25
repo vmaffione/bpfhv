@@ -180,6 +180,7 @@ static int		bpfhv_tx_clean(struct bpfhv_txq *txq, bool in_napi);
 static void		bpfhv_tx_ctx_clean(struct bpfhv_txq *txq, bool in_napi);
 static int		bpfhv_rx_refill(struct bpfhv_rxq *rxq, gfp_t gfp);
 static int		bpfhv_rx_poll(struct napi_struct *napi, int budget);
+static int		bpfhv_rx_clean(struct bpfhv_rxq *rxq, int budget);
 static struct net_device_stats *bpfhv_get_stats(struct net_device *netdev);
 static int		bpfhv_change_mtu(struct net_device *netdev, int new_mtu);
 static netdev_features_t
@@ -1328,6 +1329,10 @@ bpfhv_close(struct net_device *netdev)
 		struct bpfhv_rxq *rxq = bi->rxqs + i;
 
 		napi_disable(&rxq->napi);
+		/* There may still be pending receive buffers,
+		 * since we stopped NAPI from rescheduling.
+		 * Process them if any. */
+		bpfhv_rx_clean(rxq, bi->rx_bufs);
 	}
 
 	bpfhv_queues_dump(bi, "pre-dealloc");
@@ -1730,12 +1735,37 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 	struct bpfhv_rxq *rxq = container_of(napi, struct bpfhv_rxq, napi);
 	struct bpfhv_rx_context *ctx = rxq->ctx;
 	struct bpfhv_info *bi = rxq->bi;
-	bool more = true;
 	int count;
 
 	/* Disable interrupts. */
 	ctx->min_completed_bufs = 0;
 	BPF_PROG_RUN(bi->progs[BPFHV_PROG_RX_INTRS], ctx);
+
+	/* Process the receive queue. */
+	count = bpfhv_rx_clean(rxq, budget);
+
+	if (count < budget) {
+		/* No more received packets. Complete NAPI, enable interrupts
+		 * and reschedule if necessary. */
+		bool more;
+
+		napi_complete_done(napi, count);
+		ctx->min_completed_bufs = 1;
+		more = BPF_PROG_RUN(bi->progs[BPFHV_PROG_RX_INTRS], ctx);
+		if (unlikely(more)) {
+			napi_schedule(napi);
+		}
+	}
+
+	return count;
+}
+
+static int
+bpfhv_rx_clean(struct bpfhv_rxq *rxq, int budget)
+{
+	struct bpfhv_rx_context *ctx = rxq->ctx;
+	struct bpfhv_info *bi = rxq->bi;
+	int count;
 
 	for (count = 0; count < budget; count++) {
 		struct sk_buff *skb;
@@ -1765,17 +1795,6 @@ bpfhv_rx_poll(struct napi_struct *napi, int budget)
 		netif_receive_skb(skb);
 		if (rxq->rx_free_bufs >= 16) {
 			bpfhv_rx_refill(rxq, GFP_ATOMIC);
-		}
-	}
-
-	if (count < budget) {
-		/* No more received packets. Complete NAPI, enable interrupts
-		 * and reschedule if necesssary. */
-		napi_complete_done(napi, count);
-		ctx->min_completed_bufs = 1;
-		more = BPF_PROG_RUN(bi->progs[BPFHV_PROG_RX_INTRS], ctx);
-		if (unlikely(more)) {
-			napi_schedule(napi);
 		}
 	}
 
