@@ -149,6 +149,7 @@ static int		bpfhv_probe(struct pci_dev *pdev,
 					const struct pci_device_id *id);
 static void		bpfhv_remove(struct pci_dev *pdev);
 static void		bpfhv_shutdown(struct pci_dev *pdev);
+static void		bpfhv_negotiate_features(struct bpfhv_info *bi);
 static int		bpfhv_irqs_setup(struct bpfhv_info *bi);
 static void		bpfhv_irqs_teardown(struct bpfhv_info *bi);
 static irqreturn_t	bpfhv_upgrade_intr(int irq, void *data);
@@ -206,8 +207,6 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	struct bpfhv_info *bi;
 	size_t doorbell_size;
 	u8* __iomem regaddr;
-	uint32_t features;
-	uint32_t myfeatures;
 	int bars;
 	int ret;
 	int i;
@@ -331,48 +330,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	netif_set_real_num_tx_queues(netdev, queue_pairs);
 	netif_set_real_num_rx_queues(netdev, queue_pairs);
 
-	/* Negotiate features with the hypervisor, and report them to
-	 * the kernel. */
-	myfeatures = BPFHV_F_SG;
-	if (csum) {
-		myfeatures |= BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM;
-		if (gso) {
-			myfeatures |= BPFHV_F_TSOv4 | BPFHV_F_TCPv4_LRO
-				   |  BPFHV_F_TSOv6 | BPFHV_F_TCPv6_LRO;
-		}
-	}
-	features = readl(regaddr + BPFHV_REG_FEATURES);
-	features &= myfeatures;
-	writel(features, regaddr + BPFHV_REG_FEATURES);
-	netdev->needed_headroom = 0;
-	bi->lro = false;
-	netdev->features = NETIF_F_HIGHDMA;
-	netdev->hw_features = 0;
-	if (features & BPFHV_F_SG) {
-		netdev->features |= NETIF_F_SG;
-		netdev->hw_features |= NETIF_F_SG;
-	}
-	if (features & BPFHV_F_TX_CSUM) {
-		netdev->hw_features |= NETIF_F_HW_CSUM;
-		netdev->features |= NETIF_F_HW_CSUM;
-		if (features & BPFHV_F_TSOv4) {
-			netdev->hw_features |= NETIF_F_TSO;
-		}
-		if (features & BPFHV_F_TSOv6) {
-			netdev->hw_features |= NETIF_F_TSO6;
-		}
-		netdev->features |= NETIF_F_GSO_ROBUST;
-		netdev->features |= netdev->hw_features & NETIF_F_ALL_TSO;
-	}
-	if (features & BPFHV_F_RX_CSUM) {
-		netdev->features |= NETIF_F_RXCSUM;
-	}
-	if (features & (BPFHV_F_TCPv4_LRO | BPFHV_F_TCPv6_LRO)) {
-		netdev->hw_features |= NETIF_F_LRO;
-		netdev->features |= NETIF_F_LRO;
-		bi->lro = true;
-	}
-	netdev->vlan_features = netdev->features;
+	bpfhv_negotiate_features(bi);
 	netdev->min_mtu = ETH_MIN_MTU;
 	netdev->max_mtu = ETH_DATA_LEN;
 
@@ -471,6 +429,56 @@ static void
 bpfhv_shutdown(struct pci_dev *pdev)
 {
 	pci_disable_device(pdev);
+}
+
+/* Negotiate features with the hypervisor, and report them to
+ * the kernel. */
+static void
+bpfhv_negotiate_features(struct bpfhv_info *bi)
+{
+	struct net_device *netdev = bi->netdev;
+	uint32_t myfeatures = BPFHV_F_SG;
+	uint32_t features;
+
+	if (csum) {
+		myfeatures |= BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM;
+		if (gso) {
+			myfeatures |= BPFHV_F_TSOv4 | BPFHV_F_TCPv4_LRO
+				   |  BPFHV_F_TSOv6 | BPFHV_F_TCPv6_LRO;
+		}
+	}
+	features = readl(bi->regaddr + BPFHV_REG_FEATURES);
+	features &= myfeatures;
+	writel(features, bi->regaddr + BPFHV_REG_FEATURES);
+	netdev->needed_headroom = 0;
+	bi->lro = false;
+	netdev->features = NETIF_F_HIGHDMA;
+	netdev->hw_features = 0;
+	if (features & BPFHV_F_SG) {
+		netdev->features |= NETIF_F_SG;
+		netdev->hw_features |= NETIF_F_SG;
+	}
+	if (features & BPFHV_F_TX_CSUM) {
+		netdev->hw_features |= NETIF_F_HW_CSUM;
+		netdev->features |= NETIF_F_HW_CSUM;
+		if (features & BPFHV_F_TSOv4) {
+			netdev->hw_features |= NETIF_F_TSO;
+		}
+		if (features & BPFHV_F_TSOv6) {
+			netdev->hw_features |= NETIF_F_TSO6;
+		}
+		netdev->features |= NETIF_F_GSO_ROBUST;
+		netdev->features |= netdev->hw_features & NETIF_F_ALL_TSO;
+	}
+	if (features & BPFHV_F_RX_CSUM) {
+		netdev->features |= NETIF_F_RXCSUM;
+	}
+	if (features & (BPFHV_F_TCPv4_LRO | BPFHV_F_TCPv6_LRO)) {
+		netdev->hw_features |= NETIF_F_LRO;
+		netdev->features |= NETIF_F_LRO;
+		bi->lro = true;
+	}
+	netdev->vlan_features = netdev->features;
 }
 
 static int bpfhv_irqs_setup(struct bpfhv_info *bi)
@@ -621,6 +629,10 @@ bpfhv_upgrade(struct work_struct *w)
 		rtnl_unlock();
 		return;
 	}
+
+	/* Renegotiate features and inform the kernel about that. */
+	bpfhv_negotiate_features(bi);
+	netdev_update_features(bi->netdev);
 
 	bi->broken = false;
 
