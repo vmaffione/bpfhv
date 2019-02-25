@@ -150,7 +150,7 @@ static int		bpfhv_probe(struct pci_dev *pdev,
 					const struct pci_device_id *id);
 static void		bpfhv_remove(struct pci_dev *pdev);
 static void		bpfhv_shutdown(struct pci_dev *pdev);
-static void		bpfhv_negotiate_features(struct bpfhv_info *bi);
+static void		bpfhv_features_init(struct bpfhv_info *bi);
 static int		bpfhv_irqs_setup(struct bpfhv_info *bi);
 static void		bpfhv_irqs_teardown(struct bpfhv_info *bi);
 static irqreturn_t	bpfhv_upgrade_intr(int irq, void *data);
@@ -204,7 +204,8 @@ static const struct ethtool_ops bpfhv_ethtool_ops = {
 	.get_drvinfo = bpfhv_get_drvinfo,
 };
 
-/* Return the features supported by this driver (and enabled). */
+/* Return the features that driver and device support by working
+ * together. */
 static uint32_t
 bpfhv_hv_features(struct bpfhv_info *bi)
 {
@@ -218,7 +219,6 @@ bpfhv_hv_features(struct bpfhv_info *bi)
 				   |  BPFHV_F_TSOv6 | BPFHV_F_TCPv6_LRO;
 		}
 	}
-
 
 	hv_features = readl(bi->regaddr + BPFHV_REG_FEATURES);
 
@@ -358,7 +358,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	netif_set_real_num_tx_queues(netdev, queue_pairs);
 	netif_set_real_num_rx_queues(netdev, queue_pairs);
 
-	bpfhv_negotiate_features(bi);
+	bpfhv_features_init(bi);
 	netdev->min_mtu = ETH_MIN_MTU;
 	netdev->max_mtu = ETH_DATA_LEN;
 
@@ -462,7 +462,7 @@ bpfhv_shutdown(struct pci_dev *pdev)
 /* Negotiate features with the hypervisor, and report them to
  * the kernel. */
 static void
-bpfhv_negotiate_features(struct bpfhv_info *bi)
+bpfhv_features_init(struct bpfhv_info *bi)
 {
 	struct net_device *netdev = bi->netdev;
 	uint32_t features;
