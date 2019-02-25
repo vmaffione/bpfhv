@@ -181,7 +181,11 @@ static int		bpfhv_rx_refill(struct bpfhv_rxq *rxq, gfp_t gfp);
 static int		bpfhv_rx_poll(struct napi_struct *napi, int budget);
 static struct net_device_stats *bpfhv_get_stats(struct net_device *netdev);
 static int		bpfhv_change_mtu(struct net_device *netdev, int new_mtu);
-
+static netdev_features_t
+			bpfhv_fix_features(struct net_device *netdev,
+					   netdev_features_t features);
+static int		bpfhv_set_features(struct net_device *netdev,
+					   netdev_features_t features);
 static void		bpfhv_get_drvinfo(struct net_device *netdev,
 					  struct ethtool_drvinfo *drvinfo);
 
@@ -191,6 +195,8 @@ static const struct net_device_ops bpfhv_netdev_ops = {
 	.ndo_start_xmit			= bpfhv_start_xmit,
 	.ndo_get_stats			= bpfhv_get_stats,
 	.ndo_change_mtu			= bpfhv_change_mtu,
+	.ndo_fix_features		= bpfhv_fix_features,
+	.ndo_set_features		= bpfhv_set_features,
 };
 
 static const struct ethtool_ops bpfhv_ethtool_ops = {
@@ -630,8 +636,7 @@ bpfhv_upgrade(struct work_struct *w)
 		return;
 	}
 
-	/* Renegotiate features and inform the kernel about that. */
-	bpfhv_negotiate_features(bi);
+	/* Renegotiate features. */
 	netdev_update_features(bi->netdev);
 
 	bi->broken = false;
@@ -1782,6 +1787,60 @@ bpfhv_change_mtu(struct net_device *netdev, int new_mtu)
 		__func__, netdev->name, netdev->mtu, new_mtu);
 	netdev->mtu = new_mtu;
 
+	return 0;
+}
+
+static netdev_features_t
+bpfhv_fix_features(struct net_device *netdev, netdev_features_t features)
+{
+	struct bpfhv_info *bi = netdev_priv(netdev);
+	uint32_t driver_features = BPFHV_F_SG;
+	uint32_t hv_features;
+
+	if (csum) {
+		driver_features |= BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM;
+		if (gso) {
+			driver_features |= BPFHV_F_TSOv4 | BPFHV_F_TCPv4_LRO
+				   |  BPFHV_F_TSOv6 | BPFHV_F_TCPv6_LRO;
+		}
+	}
+
+	hv_features = readl(bi->regaddr + BPFHV_REG_FEATURES);
+	hv_features &= driver_features;
+	writel(hv_features, bi->regaddr + BPFHV_REG_FEATURES);
+
+	if (!(hv_features & BPFHV_F_SG)) {
+		features &= ~NETIF_F_SG;
+	}
+	if (!(hv_features & BPFHV_F_TX_CSUM)) {
+		features &= ~(NETIF_F_HW_CSUM | NETIF_F_ALL_TSO
+				| NETIF_F_GSO_ROBUST);
+	}
+
+	if (!(hv_features & BPFHV_F_TSOv4)) {
+		features &= ~NETIF_F_TSO;
+	}
+
+	if (!(hv_features & BPFHV_F_TSOv6)) {
+		features &= ~NETIF_F_TSO6;
+	}
+
+	if (!(hv_features & BPFHV_F_RX_CSUM)) {
+		features &= ~NETIF_F_RXCSUM;
+	}
+
+	if (!(hv_features & (BPFHV_F_TCPv4_LRO | BPFHV_F_TCPv6_LRO))) {
+		features &= ~NETIF_F_LRO;
+	}
+
+	bi->lro = !!(features & NETIF_F_LRO);
+
+	return features;
+}
+
+static int
+bpfhv_set_features(struct net_device *netdev, netdev_features_t features)
+{
 	return 0;
 }
 
