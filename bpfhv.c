@@ -823,6 +823,56 @@ BPF_CALL_2(bpf_hv_pkt_virtio_net_md_set, struct bpfhv_rx_context *, ctx,
 	return 0;
 }
 
+BPF_CALL_4(bpf_hv_rx_buf_dma_map, struct bpfhv_rx_context *, ctx,
+	   void *, vaddr, size_t, len, uint64_t *, paddr)
+{
+	struct bpfhv_rxq *rxq = RXQ_FROM_CTX(ctx);
+	struct device *dev = rxq->bi->dev;
+
+	*paddr = dma_map_single(dev, vaddr, len, DMA_FROM_DEVICE);
+	if (unlikely(dma_mapping_error(dev, *paddr))) {
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+BPF_CALL_4(bpf_hv_rx_buf_dma_unmap, struct bpfhv_rx_context *, ctx,
+	   void *, vaddr, size_t, len, uint64_t, paddr)
+{
+	struct bpfhv_rxq *rxq = RXQ_FROM_CTX(ctx);
+	struct device *dev = rxq->bi->dev;
+
+	dma_unmap_single(dev, paddr, len, DMA_FROM_DEVICE);
+
+	return 0;
+}
+
+BPF_CALL_4(bpf_hv_tx_buf_dma_map, struct bpfhv_tx_context *, ctx,
+	   void *, vaddr, size_t, len, uint64_t *, paddr)
+{
+	struct bpfhv_txq *txq = TXQ_FROM_CTX(ctx);
+	struct device *dev = txq->bi->dev;
+
+	*paddr = dma_map_single(dev, vaddr, len, DMA_TO_DEVICE);
+	if (unlikely(dma_mapping_error(dev, *paddr))) {
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+BPF_CALL_4(bpf_hv_tx_buf_dma_unmap, struct bpfhv_tx_context *, ctx,
+	   void *, vaddr, size_t, len, uint64_t, paddr)
+{
+	struct bpfhv_txq *txq = TXQ_FROM_CTX(ctx);
+	struct device *dev = txq->bi->dev;
+
+	dma_unmap_single(dev, paddr, len, DMA_TO_DEVICE);
+
+	return 0;
+}
+
 #undef PROGDUMP
 #ifdef PROGDUMP
 static void
@@ -1098,6 +1148,18 @@ bpfhv_helper_calls_fixup(struct bpfhv_info *bi, struct bpf_insn *insns,
 			break;
 		case BPFHV_FUNC_pkt_virtio_net_md_set:
 			func = bpf_hv_pkt_virtio_net_md_set;
+			break;
+		case BPFHV_FUNC_rx_buf_dma_map:
+			func = bpf_hv_rx_buf_dma_map;
+			break;
+		case BPFHV_FUNC_rx_buf_dma_unmap:
+			func = bpf_hv_rx_buf_dma_unmap;
+			break;
+		case BPFHV_FUNC_tx_buf_dma_map:
+			func = bpf_hv_tx_buf_dma_map;
+			break;
+		case BPFHV_FUNC_tx_buf_dma_unmap:
+			func = bpf_hv_tx_buf_dma_unmap;
 			break;
 		default:
 			netif_err(bi, drv, bi->netdev,

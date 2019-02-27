@@ -127,6 +127,10 @@ enum bpfhv_helper_id {
 	BPFHV_FUNC_pkt_l4_csum_md_set,
 	BPFHV_FUNC_pkt_virtio_net_md_get,
 	BPFHV_FUNC_pkt_virtio_net_md_set,
+	BPFHV_FUNC_rx_buf_dma_map,
+	BPFHV_FUNC_rx_buf_dma_unmap,
+	BPFHV_FUNC_tx_buf_dma_map,
+	BPFHV_FUNC_tx_buf_dma_unmap,
 };
 
 #ifndef BPFHV_FUNC
