@@ -1,13 +1,15 @@
-ifneq ($(KERNELRELEASE),)
-# kbuild part of makefile
-obj-m := bpfhv.o
-else
-# normal makefile
 KDIR ?= /lib/modules/`uname -r`/build
 
-all:
-	$(MAKE) -C $(KDIR) M=$$PWD
+all: proxy/backend ker
 
-clean:
-	$(MAKE) -C $(KDIR) M=$$PWD clean
-endif
+ker:
+	$(MAKE) -C $(KDIR) M=$(PWD)/kernel
+
+proxy/backend: proxy/backend.cpp
+	$(CXX) -Wall -Werror -o $@ $<
+
+clean: ker_clean
+	-rm *.o backend
+
+ker_clean:
+	$(MAKE) -C $(KDIR) M=$(PWD)/kernel clean
