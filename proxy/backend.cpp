@@ -47,7 +47,8 @@ main(int argc, char **argv)
 
     cfd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (cfd < 0) {
-        std::cerr << "socket(AF_UNIX) failed: " << strerror(errno) << std::endl;
+        std::cerr << "socket(AF_UNIX) failed: " << strerror(errno)
+                << std::endl;
         return -1;
     }
 
@@ -63,8 +64,12 @@ main(int argc, char **argv)
     }
 
     for (;;) {
+        ssize_t payload_size = 0;
+        BpfhvProxyMsgPayload payload;
+        BpfhvProxyMessage msg;
         struct pollfd pfd[1];
-        int n;
+        char buf[1024];
+        ssize_t n;
 
         pfd[0].fd = cfd;
         pfd[0].events = POLLIN;
@@ -72,24 +77,102 @@ main(int argc, char **argv)
         assert(n != 0);
         if (n < 0) {
             std::cerr << "poll() failed: " << strerror(errno) << std::endl;
-            return -1;
+            break;
         }
 
-        char buf[1024];
-
-        n = read(cfd, buf, sizeof(buf));
+        memset(&msg, 0, sizeof(msg));
+        n = read(cfd, buf, sizeof(msg));
         if (n < 0) {
             std::cerr << "read(cfd) failed: " << strerror(errno) << std::endl;
-            return -1;
+            break;
         }
 
-        std::cout << "Got message, size " << n << std::endl;
         if (n == 0) {
             /* EOF */
+            std::cout << "Connection closed by the hypervisor" << std::endl;
+            break;
+        }
+
+        if (n < (ssize_t)sizeof(msg)) {
+            std::cerr << "Message too short (" << n << " bytes)" << std::endl;
+            break;
+        }
+
+        switch (msg.reqtype) {
+        case BPFHV_PROXY_REQ_GET_FEATURES:
+        case BPFHV_PROXY_REQ_RX_ENABLE:
+        case BPFHV_PROXY_REQ_TX_ENABLE:
+        case BPFHV_PROXY_REQ_RX_DISABLE:
+        case BPFHV_PROXY_REQ_TX_DISABLE:
+            payload_size = 0;
+            break;
+
+        case BPFHV_PROXY_REQ_SET_FEATURES:
+            payload_size = sizeof(msg.payload.u64);
+            break;
+
+        case BPFHV_PROXY_REQ_SET_MEM_TABLE:
+            payload_size = sizeof(msg.payload.memory_map);
+            break;
+
+        case BPFHV_PROXY_REQ_SET_QUEUE_CTX:
+            payload_size = sizeof(msg.payload.queue_ctx);
+            break;
+
+        case BPFHV_PROXY_REQ_SET_QUEUE_KICK:
+        case BPFHV_PROXY_REQ_SET_QUEUE_IRQ:
+            payload_size = sizeof(msg.payload.notify);
+            break;
+
+        default:
+            std::cerr << "Invalid request type (" << msg.reqtype << ")"
+                    << std::endl;
+            goto out;
+            break;
+        }
+
+        if (payload_size != msg.size) {
+            std::cerr << "Payload size mismatch: expected " << payload_size
+                << ", got " << msg.size << std::endl;
+            break;
+        }
+
+        memset(&payload, 0, sizeof(payload));
+        n = read(cfd, buf, payload_size);
+        if (n < 0) {
+            std::cerr << "read(cfd, payload) failed: " << strerror(errno)
+                    << std::endl;
+            break;
+        }
+
+        if (n != payload_size) {
+            std::cerr << "Truncated payload: expected " << payload_size
+                    << " bytes, but only " << n << " were read" << std::endl;
+            break;
+        }
+
+        switch (msg.reqtype) {
+        case BPFHV_PROXY_REQ_GET_FEATURES:
+        case BPFHV_PROXY_REQ_RX_ENABLE:
+        case BPFHV_PROXY_REQ_TX_ENABLE:
+        case BPFHV_PROXY_REQ_RX_DISABLE:
+        case BPFHV_PROXY_REQ_TX_DISABLE:
+        case BPFHV_PROXY_REQ_SET_FEATURES:
+        case BPFHV_PROXY_REQ_SET_MEM_TABLE:
+        case BPFHV_PROXY_REQ_SET_QUEUE_CTX:
+        case BPFHV_PROXY_REQ_SET_QUEUE_KICK:
+        case BPFHV_PROXY_REQ_SET_QUEUE_IRQ:
+            std::cout << "Handling message ..." << std::endl;
+            break;
+
+        default:
+            /* Not reached (see switch statement above). */
+            assert(false);
             break;
         }
     }
 
+out:
     close(cfd);
 
     return 0;

@@ -47,33 +47,35 @@ typedef enum BpfhvProxyReqType {
     BPFHV_PROXY_REQ_SET_QUEUE_IRQ,
 } BpfhvProxyReqType;
 
+typedef union BpfhvProxyMsgPayload {
+    uint64_t            u64;
+    /* Associated messages:
+     *   - BPFHV_PROXY_REQ_GET_FEATURES (resp)
+     *   - BPFHV_PROXY_REQ_SET_FEATURES
+     */
+
+    BpfhvProxyMemoryMap memory_map;
+    /* Associated messages:
+     *   - BPFHV_PROXY_REQ_SET_MEM_TABLE
+     */
+
+    BpfhvProxyQueueCtx  queue_ctx;
+    /* Associated messages:
+     *   - BPFHV_PROXY_REQ_SET_QUEUE_CTX
+     */
+
+    BpfhvProxyNotifier  notify;
+    /* Associated messages:
+     *   - BPFHV_PROXY_REQ_SET_QUEUE_KICK
+     *   - BPFHV_PROXY_REQ_SET_QUEUE_IRQ
+     */
+} BpfhvProxyMsgPayload;
+
 typedef struct BpfhvProxyMessage {
     BpfhvProxyReqType       reqtype;
     uint32_t                flags;
     uint32_t                size;
-    union {
-        uint64_t            u64;
-        /* Associated messages:
-         *   - BPFHV_PROXY_REQ_GET_FEATURES
-         *   - BPFHV_PROXY_REQ_SET_FEATURES
-         */
-
-        BpfhvProxyMemoryMap memory_map;
-        /* Associated messages:
-         *   - BPFHV_PROXY_REQ_SET_MEM_TABLE
-         */
-
-        BpfhvProxyQueueCtx  queue_ctx;
-        /* Associated messages:
-         *   - BPFHV_PROXY_REQ_SET_QUEUE_CTX
-         */
-
-        BpfhvProxyNotifier  notify;
-        /* Associated messages:
-         *   - BPFHV_PROXY_REQ_SET_QUEUE_KICK
-         *   - BPFHV_PROXY_REQ_SET_QUEUE_IRQ
-         */
-    } payload;
+    BpfhvProxyMsgPayload    payload;
 } __attribute__((packed)) BpfhvProxyMessage;
 
 #ifdef __cplusplus
