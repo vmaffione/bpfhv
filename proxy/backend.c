@@ -1,11 +1,11 @@
-#include <iostream>
+#include <stdio.h>
 #include <unistd.h>
-#include <cerrno>
-#include <cstring>
+#include <errno.h>
+#include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
-#include <cassert>
+#include <assert.h>
 #include <poll.h>
 
 #include "bpfhv-proxy.h"
@@ -13,10 +13,10 @@
 static void
 usage(const char *progname)
 {
-    std::cout << progname << ": " << std::endl
-        << "    -h (show this help and exit)" << std::endl
-        << "    -p UNIX_SOCKET_PATH" << std::endl
-        << std::endl;
+    printf("%s:\n"
+           "    -h (show this help and exit)\n"
+           "    -p UNIX_SOCKET_PATH\n",
+            progname);
 }
 
 int
@@ -40,15 +40,14 @@ main(int argc, char **argv)
     }
 
     if (path == NULL) {
-        std::cerr << "Missing UNIX socket path" << std::endl;
+        fprintf(stderr, "Missing UNIX socket path\n");
         usage(argv[0]);
         return -1;
     }
 
     cfd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (cfd < 0) {
-        std::cerr << "socket(AF_UNIX) failed: " << strerror(errno)
-                << std::endl;
+        fprintf(stderr, "socket(AF_UNIX) failed: %s\n", strerror(errno));
         return -1;
     }
 
@@ -58,8 +57,7 @@ main(int argc, char **argv)
 
     if (connect(cfd, (const struct sockaddr *)&server_addr,
                 sizeof(server_addr)) < 0) {
-        std::cerr << "connect(" << path << ") failed: "
-                    << strerror(errno) << std::endl;
+        fprintf(stderr, "connect(%s) failed: %s\n", path, strerror(errno));
         return -1;
     }
 
@@ -76,25 +74,25 @@ main(int argc, char **argv)
         n = poll(pfd, sizeof(pfd)/sizeof(pfd[0]), -1);
         assert(n != 0);
         if (n < 0) {
-            std::cerr << "poll() failed: " << strerror(errno) << std::endl;
+            fprintf(stderr, "poll() failed: %s\n", strerror(errno));
             break;
         }
 
         memset(&msg, 0, sizeof(msg));
         n = read(cfd, buf, sizeof(msg));
         if (n < 0) {
-            std::cerr << "read(cfd) failed: " << strerror(errno) << std::endl;
+            fprintf(stderr, "read(cfd) failed: %s\n", strerror(errno));
             break;
         }
 
         if (n == 0) {
             /* EOF */
-            std::cout << "Connection closed by the hypervisor" << std::endl;
+            printf("Connection closed by the hypervisor\n");
             break;
         }
 
         if (n < (ssize_t)sizeof(msg)) {
-            std::cerr << "Message too short (" << n << " bytes)" << std::endl;
+            fprintf(stderr, "Message too short (%zd bytes)\n", n);
             break;
         }
 
@@ -125,29 +123,28 @@ main(int argc, char **argv)
             break;
 
         default:
-            std::cerr << "Invalid request type (" << msg.reqtype << ")"
-                    << std::endl;
+            fprintf(stderr, "Invalid request type (%d)\n", msg.reqtype);
             goto out;
             break;
         }
 
         if (payload_size != msg.size) {
-            std::cerr << "Payload size mismatch: expected " << payload_size
-                << ", got " << msg.size << std::endl;
+            fprintf(stderr, "Payload size mismatch: expected %zd, got %u\n",
+                    payload_size, msg.size);
             break;
         }
 
         memset(&payload, 0, sizeof(payload));
         n = read(cfd, buf, payload_size);
         if (n < 0) {
-            std::cerr << "read(cfd, payload) failed: " << strerror(errno)
-                    << std::endl;
+            fprintf(stderr, "read(cfd, payload) failed: %s\n",
+                    strerror(errno));
             break;
         }
 
         if (n != payload_size) {
-            std::cerr << "Truncated payload: expected " << payload_size
-                    << " bytes, but only " << n << " were read" << std::endl;
+            fprintf(stderr, "Truncated payload: expected %zd bytes, "
+                    "but only %zd were read\n", payload_size, n);
             break;
         }
 
@@ -162,12 +159,12 @@ main(int argc, char **argv)
         case BPFHV_PROXY_REQ_SET_QUEUE_CTX:
         case BPFHV_PROXY_REQ_SET_QUEUE_KICK:
         case BPFHV_PROXY_REQ_SET_QUEUE_IRQ:
-            std::cout << "Handling message ..." << std::endl;
+            printf("Handling message ...\n");
             break;
 
         default:
             /* Not reached (see switch statement above). */
-            assert(false);
+            assert(0);
             break;
         }
     }

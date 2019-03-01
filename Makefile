@@ -5,8 +5,8 @@ all: proxy/backend ker
 ker:
 	$(MAKE) -C $(KDIR) M=$(PWD)/kernel PWD=$(PWD)/kernel modules
 
-proxy/backend: proxy/backend.cpp include/bpfhv-proxy.h include/bpfhv.h
-	$(CXX) -Wall -Werror -I $(PWD)/include -o $@ $<
+proxy/backend: proxy/backend.c include/bpfhv-proxy.h include/bpfhv.h
+	$(CC) -Wall -Werror -I $(PWD)/include -o $@ $<
 
 clean: ker_clean
 	-rm *.o proxy/backend
