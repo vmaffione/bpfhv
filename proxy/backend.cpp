@@ -5,6 +5,10 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <cassert>
+#include <poll.h>
+
+#include "bpfhv-proxy.h"
 
 static void
 usage(const char *progname)
@@ -56,6 +60,34 @@ main(int argc, char **argv)
         std::cerr << "connect(" << path << ") failed: "
                     << strerror(errno) << std::endl;
         return -1;
+    }
+
+    for (;;) {
+        struct pollfd pfd[1];
+        int n;
+
+        pfd[0].fd = cfd;
+        pfd[0].events = POLLIN;
+        n = poll(pfd, sizeof(pfd)/sizeof(pfd[0]), -1);
+        assert(n != 0);
+        if (n < 0) {
+            std::cerr << "poll() failed: " << strerror(errno) << std::endl;
+            return -1;
+        }
+
+        char buf[1024];
+
+        n = read(cfd, buf, sizeof(buf));
+        if (n < 0) {
+            std::cerr << "read(cfd) failed: " << strerror(errno) << std::endl;
+            return -1;
+        }
+
+        std::cout << "Got message, size " << n << std::endl;
+        if (n == 0) {
+            /* EOF */
+            break;
+        }
     }
 
     close(cfd);
