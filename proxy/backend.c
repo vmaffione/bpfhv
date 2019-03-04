@@ -9,6 +9,7 @@
 #include <poll.h>
 
 #include "bpfhv-proxy.h"
+#include "bpfhv.h"
 
 static void
 usage(const char *progname)
@@ -19,15 +20,27 @@ usage(const char *progname)
             progname);
 }
 
+typedef struct BpfhvProxyBackend {
+    /* The features we support. */
+    uint64_t features_avail;
+
+    /* The features selected by the guest. */
+    uint64_t features_sel;
+} BpfhvProxyBackend;
+
 static int
 main_loop(int cfd)
 {
+    BpfhvProxyBackend be;
     int ret = -1;
+
+    be.features_avail = BPFHV_F_SG;
+    be.features_sel = 0;
 
     for (;;) {
         ssize_t payload_size = 0;
-        BpfhvProxyMsgPayload payload;
         BpfhvProxyMessage msg;
+        BpfhvProxyMessage resp;
         struct pollfd pfd[1];
         char buf[1024];
         ssize_t n;
@@ -41,8 +54,9 @@ main_loop(int cfd)
             break;
         }
 
-        memset(&msg, 0, sizeof(msg));
-        n = read(cfd, buf, sizeof(msg));
+        /* Read message header. */
+        memset(&msg.hdr, 0, sizeof(msg.hdr));
+        n = read(cfd, buf, sizeof(msg.hdr));
         if (n < 0) {
             fprintf(stderr, "read(cfd) failed: %s\n", strerror(errno));
             break;
@@ -54,12 +68,13 @@ main_loop(int cfd)
             break;
         }
 
-        if (n < (ssize_t)sizeof(msg)) {
+        if (n < (ssize_t)sizeof(msg.hdr)) {
             fprintf(stderr, "Message too short (%zd bytes)\n", n);
             break;
         }
 
-        switch (msg.reqtype) {
+        /* Check that payload size is correct. */
+        switch (msg.hdr.reqtype) {
         case BPFHV_PROXY_REQ_GET_FEATURES:
         case BPFHV_PROXY_REQ_RX_ENABLE:
         case BPFHV_PROXY_REQ_TX_ENABLE:
@@ -86,17 +101,18 @@ main_loop(int cfd)
             break;
 
         default:
-            fprintf(stderr, "Invalid request type (%d)\n", msg.reqtype);
+            fprintf(stderr, "Invalid request type (%d)\n", msg.hdr.reqtype);
             return -1;
         }
 
-        if (payload_size != msg.size) {
+        if (payload_size != msg.hdr.size) {
             fprintf(stderr, "Payload size mismatch: expected %zd, got %u\n",
-                    payload_size, msg.size);
+                    payload_size, msg.hdr.size);
             break;
         }
 
-        memset(&payload, 0, sizeof(payload));
+        /* Read payload. */
+        memset(&msg.payload, 0, sizeof(msg.payload));
         n = read(cfd, buf, payload_size);
         if (n < 0) {
             fprintf(stderr, "read(cfd, payload) failed: %s\n",
@@ -110,13 +126,25 @@ main_loop(int cfd)
             break;
         }
 
-        switch (msg.reqtype) {
+        memset(&resp, 0, sizeof(resp));
+        resp.hdr.reqtype = BPFHV_PROXY_REQ_NONE;
+
+        /* Process request. */
+        switch (msg.hdr.reqtype) {
+        case BPFHV_PROXY_REQ_SET_FEATURES:
+            be.features_sel = be.features_avail & msg.payload.u64;
+            break;
+
         case BPFHV_PROXY_REQ_GET_FEATURES:
+            resp.hdr.reqtype = msg.hdr.reqtype;
+            resp.hdr.size = sizeof(resp.payload.u64);
+            resp.payload.u64 = be.features_avail;
+            break;
+
         case BPFHV_PROXY_REQ_RX_ENABLE:
         case BPFHV_PROXY_REQ_TX_ENABLE:
         case BPFHV_PROXY_REQ_RX_DISABLE:
         case BPFHV_PROXY_REQ_TX_DISABLE:
-        case BPFHV_PROXY_REQ_SET_FEATURES:
         case BPFHV_PROXY_REQ_SET_MEM_TABLE:
         case BPFHV_PROXY_REQ_SET_QUEUE_CTX:
         case BPFHV_PROXY_REQ_SET_QUEUE_KICK:
@@ -128,6 +156,20 @@ main_loop(int cfd)
             /* Not reached (see switch statement above). */
             assert(0);
             break;
+        }
+
+        /* Send back the response, if any. */
+        if (resp.hdr.reqtype != BPFHV_PROXY_REQ_NONE) {
+            size_t totsize = sizeof(resp.hdr) + resp.hdr.size;
+
+            n = write(cfd, &resp, totsize);
+            if (n < 0) {
+                fprintf(stderr, "write(cfd) failed: %s\n", strerror(errno));
+                break;
+            } else if (n != totsize) {
+                fprintf(stderr, "Truncated write (%zu/%zu)\n", n, totsize);
+                break;
+            }
         }
     }
 

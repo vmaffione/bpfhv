@@ -71,10 +71,14 @@ typedef union BpfhvProxyMsgPayload {
      */
 } BpfhvProxyMsgPayload;
 
-typedef struct BpfhvProxyMessage {
+typedef struct BpfhvProxyMsgHeader {
     BpfhvProxyReqType       reqtype;
     uint32_t                flags;
     uint32_t                size;
+} BpfhvProxyMsgHeader;
+
+typedef struct BpfhvProxyMessage {
+    BpfhvProxyMsgHeader     hdr;
     BpfhvProxyMsgPayload    payload;
 } __attribute__((packed)) BpfhvProxyMessage;
 
