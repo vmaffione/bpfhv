@@ -11,15 +11,17 @@ extern "C" {
 #define BPFHV_PROXY_DIRECTION_RX    1
 #define BPFHV_PROXY_DIRECTION_TX    2
 
+typedef struct BpfhvProxyMemoryRegion {
+    uint64_t        guest_physical_addr;
+    uint64_t        size;
+    uint64_t        hypervisor_virtual_addr;
+    uint64_t        mmap_offset;
+} BpfhvProxyMemoryRegion;
+
 typedef struct BpfhvProxyMemoryMap {
-    uint32_t            num_regions;
-    uint32_t            pad;
-    struct {
-        uint64_t        guest_physical_addr;
-        uint64_t        size;
-        uint64_t        hypervisor_virtual_addr;
-        uint64_t        mmap_offset;
-    } regions[BPFHV_PROXY_MAX_REGIONS];
+    uint32_t                num_regions;
+    uint32_t                pad;
+    BpfhvProxyMemoryRegion  regions[BPFHV_PROXY_MAX_REGIONS];
 } BpfhvProxyMemoryMap;
 
 typedef struct BpfhvProxyQueueCtx {
