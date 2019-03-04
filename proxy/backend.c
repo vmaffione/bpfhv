@@ -5,8 +5,10 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/mman.h>
 #include <assert.h>
 #include <poll.h>
+#include <inttypes.h>
 
 #include "bpfhv-proxy.h"
 #include "bpfhv.h"
@@ -43,7 +45,7 @@ typedef struct BpfhvBackend {
 static int
 main_loop(int cfd)
 {
-    BpfhvBackend be;
+    BpfhvBackend be = { };
     int ret = -1;
 
     be.features_avail = BPFHV_F_SG;
@@ -51,10 +53,30 @@ main_loop(int cfd)
 
     for (;;) {
         ssize_t payload_size = 0;
-        BpfhvProxyMessage msg;
         BpfhvProxyMessage resp;
-        struct pollfd pfd[1];
+
+        /* Variables to store recvmsg() ancillary data. */
+        int fds[BPFHV_PROXY_MAX_REGIONS];
+        size_t num_fds = 0;
+
+        /* Support variables for reading a bpfhv-proxy message header. */
+        char control[CMSG_SPACE(BPFHV_PROXY_MAX_REGIONS * sizeof(fds[0]))] = {};
+        BpfhvProxyMessage msg;
+        struct iovec iov = {
+            .iov_base = &msg.hdr,
+            .iov_len = sizeof(msg.hdr),
+        };
+        struct msghdr mh = {
+            .msg_iov = &iov,
+            .msg_iovlen = 1,
+            .msg_control = control,
+            .msg_controllen = sizeof(control),
+        };
+        struct cmsghdr *cmsg;
         ssize_t n;
+
+        /* Wait for the next message to arrive. */
+        struct pollfd pfd[1];
 
         pfd[0].fd = cfd;
         pfd[0].events = POLLIN;
@@ -65,11 +87,13 @@ main_loop(int cfd)
             break;
         }
 
-        /* Read message header. */
+        /* Read a bpfhv-proxy message header plus ancillary data. */
         memset(&msg.hdr, 0, sizeof(msg.hdr));
-        n = read(cfd, &msg.hdr, sizeof(msg.hdr));
+        do {
+            n = recvmsg(cfd, &mh, 0);
+        } while (n < 0 && (errno == EINTR || errno == EAGAIN));
         if (n < 0) {
-            fprintf(stderr, "read(cfd) failed: %s\n", strerror(errno));
+            fprintf(stderr, "recvmsg(cfd) failed: %s\n", strerror(errno));
             break;
         }
 
@@ -77,6 +101,25 @@ main_loop(int cfd)
             /* EOF */
             printf("Connection closed by the hypervisor\n");
             break;
+        }
+
+        /* Scan ancillary data looking for file descriptors. */
+        for (cmsg = CMSG_FIRSTHDR(&mh); cmsg != NULL;
+                cmsg = CMSG_NXTHDR(&mh, cmsg)) {
+            if (cmsg->cmsg_level == SOL_SOCKET &&
+                    cmsg->cmsg_type == SCM_RIGHTS) {
+                size_t arr_size = cmsg->cmsg_len - CMSG_LEN(0);
+
+                num_fds = arr_size / sizeof(fds[0]);
+                if (num_fds > BPFHV_PROXY_MAX_REGIONS) {
+                    fprintf(stderr, "Message contains too much ancillary data "
+                            "(%zu file descriptors)\n", num_fds);
+                    return -1;
+                }
+                memcpy(fds, CMSG_DATA(cmsg), arr_size);
+
+                break; /* Discard any other ancillary data. */
+            }
         }
 
         if (n < (ssize_t)sizeof(msg.hdr)) {
@@ -124,7 +167,9 @@ main_loop(int cfd)
 
         /* Read payload. */
         memset(&msg.payload, 0, sizeof(msg.payload));
-        n = read(cfd, &msg.payload, payload_size);
+        do {
+            n = read(cfd, &msg.payload, payload_size);
+        } while (n < 0 && (errno == EINTR || errno == EAGAIN));
         if (n < 0) {
             fprintf(stderr, "read(cfd, payload) failed: %s\n",
                     strerror(errno));
@@ -156,13 +201,29 @@ main_loop(int cfd)
             BpfhvProxyMemoryMap *map = &msg.payload.memory_map;
             size_t i;
 
+            /* Perform sanity checks. */
             if (map->num_regions > BPFHV_PROXY_MAX_REGIONS) {
                 fprintf(stderr, "Too many memory regions: %u\n",
                         map->num_regions);
                 return -1;
             }
-            be.num_regions = map->num_regions;
+            if (num_fds != map->num_regions) {
+                fprintf(stderr, "Mismatch between number of regions (%u) and "
+                        "number of file descriptors (%zu)\n",
+                        map->num_regions, num_fds);
+                return -1;
+            }
+
+            /* Clean up previous table. */
             for (i = 0; i < be.num_regions; i++) {
+                munmap(be.regions[i].mmap_addr,
+                       be.regions[i].mmap_offset + be.regions[i].size);
+            }
+            memset(be.regions, 0, sizeof(be.regions));
+            be.num_regions = 0;
+
+            /* Setup the new table. */
+            for (i = 0; i < map->num_regions; i++) {
                 void *mmap_addr;
 
                 be.regions[i].gpa = map->regions[i].guest_physical_addr;
@@ -170,16 +231,30 @@ main_loop(int cfd)
                 be.regions[i].hva = map->regions[i].hypervisor_virtual_addr;
                 be.regions[i].mmap_offset = map->regions[i].mmap_offset;
 
-                mmap_addr = NULL;
-#if 0
                 /* We don't feed mmap_offset into the offset argument of
                  * mmap(), because the mapped address has to be page aligned,
-                 * and we use huge pages. */
-                mmap_addr = mmap(0, be->regions[i].mmap_offset +
-                                 be->regions[i].size, PROT_READ | PROT_WRITE,
-                                 MAP_SHARED, fds[i], 0);
-#endif
+                 * and we use huge pages. Instead, we map the file descriptor
+                 * from the beginning, with a map size that includes the
+                 * region of interest. */
+                mmap_addr = mmap(0, /*size=*/be.regions[i].mmap_offset +
+                                 be.regions[i].size, PROT_READ | PROT_WRITE,
+                                 MAP_SHARED, /*fd=*/fds[i], /*offset=*/0);
+                if (mmap_addr == MAP_FAILED) {
+                    fprintf(stderr, "mmap(#%zu) failed: %s\n", i, strerror(errno));
+                    return -1;
+                }
                 be.regions[i].mmap_addr = mmap_addr;
+            }
+            be.num_regions = map->num_regions;
+
+            printf("Guest memory map:\n");
+            for (i = 0; i < be.num_regions; i++) {
+                printf("    gpa %16"PRIx64", size %16"PRIu64", "
+                       "hva %16"PRIx64", mmap_ofs %16"PRIx64", "
+                       "mmap_addr %p\n",
+                       be.regions[i].gpa, be.regions[i].size,
+                       be.regions[i].hva, be.regions[i].mmap_offset,
+                       be.regions[i].mmap_addr);
             }
             break;
         }
@@ -204,7 +279,9 @@ main_loop(int cfd)
         if (resp.hdr.reqtype != BPFHV_PROXY_REQ_NONE) {
             size_t totsize = sizeof(resp.hdr) + resp.hdr.size;
 
-            n = write(cfd, &resp, totsize);
+            do {
+                n = write(cfd, &resp, totsize);
+            } while (n < 0 && (errno == EINTR || errno == EAGAIN));
             if (n < 0) {
                 fprintf(stderr, "write(cfd) failed: %s\n", strerror(errno));
                 break;
