@@ -20,18 +20,30 @@ usage(const char *progname)
             progname);
 }
 
-typedef struct BpfhvProxyBackend {
+typedef struct BpfhvBackendMemoryRegion {
+    uint64_t    gpa;
+    uint64_t    size;
+    uint64_t    hva;
+    uint64_t    mmap_offset;
+    void        *mmap_addr;
+} BpfhvBackendMemoryRegion;
+
+typedef struct BpfhvBackend {
     /* The features we support. */
     uint64_t features_avail;
 
     /* The features selected by the guest. */
     uint64_t features_sel;
-} BpfhvProxyBackend;
+
+    /* Guest memory map. */
+    BpfhvBackendMemoryRegion regions[BPFHV_PROXY_MAX_REGIONS];
+    size_t num_regions;
+} BpfhvBackend;
 
 static int
 main_loop(int cfd)
 {
-    BpfhvProxyBackend be;
+    BpfhvBackend be;
     int ret = -1;
 
     be.features_avail = BPFHV_F_SG;
@@ -140,11 +152,42 @@ main_loop(int cfd)
             resp.payload.u64 = be.features_avail;
             break;
 
+        case BPFHV_PROXY_REQ_SET_MEM_TABLE: {
+            BpfhvProxyMemoryMap *map = &msg.payload.memory_map;
+            size_t i;
+
+            if (map->num_regions > BPFHV_PROXY_MAX_REGIONS) {
+                fprintf(stderr, "Too many memory regions: %u\n",
+                        map->num_regions);
+                return -1;
+            }
+            be.num_regions = map->num_regions;
+            for (i = 0; i < be.num_regions; i++) {
+                void *mmap_addr;
+
+                be.regions[i].gpa = map->regions[i].guest_physical_addr;
+                be.regions[i].size = map->regions[i].size;
+                be.regions[i].hva = map->regions[i].hypervisor_virtual_addr;
+                be.regions[i].mmap_offset = map->regions[i].mmap_offset;
+
+                mmap_addr = NULL;
+#if 0
+                /* We don't feed mmap_offset into the offset argument of
+                 * mmap(), because the mapped address has to be page aligned,
+                 * and we use huge pages. */
+                mmap_addr = mmap(0, be->regions[i].mmap_offset +
+                                 be->regions[i].size, PROT_READ | PROT_WRITE,
+                                 MAP_SHARED, fds[i], 0);
+#endif
+                be.regions[i].mmap_addr = mmap_addr;
+            }
+            break;
+        }
+
         case BPFHV_PROXY_REQ_RX_ENABLE:
         case BPFHV_PROXY_REQ_TX_ENABLE:
         case BPFHV_PROXY_REQ_RX_DISABLE:
         case BPFHV_PROXY_REQ_TX_DISABLE:
-        case BPFHV_PROXY_REQ_SET_MEM_TABLE:
         case BPFHV_PROXY_REQ_SET_QUEUE_CTX:
         case BPFHV_PROXY_REQ_SET_QUEUE_KICK:
         case BPFHV_PROXY_REQ_SET_QUEUE_IRQ:
