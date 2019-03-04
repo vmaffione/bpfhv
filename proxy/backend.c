@@ -42,7 +42,6 @@ main_loop(int cfd)
         BpfhvProxyMessage msg;
         BpfhvProxyMessage resp;
         struct pollfd pfd[1];
-        char buf[1024];
         ssize_t n;
 
         pfd[0].fd = cfd;
@@ -56,7 +55,7 @@ main_loop(int cfd)
 
         /* Read message header. */
         memset(&msg.hdr, 0, sizeof(msg.hdr));
-        n = read(cfd, buf, sizeof(msg.hdr));
+        n = read(cfd, &msg.hdr, sizeof(msg.hdr));
         if (n < 0) {
             fprintf(stderr, "read(cfd) failed: %s\n", strerror(errno));
             break;
@@ -113,7 +112,7 @@ main_loop(int cfd)
 
         /* Read payload. */
         memset(&msg.payload, 0, sizeof(msg.payload));
-        n = read(cfd, buf, payload_size);
+        n = read(cfd, &msg.payload, payload_size);
         if (n < 0) {
             fprintf(stderr, "read(cfd, payload) failed: %s\n",
                     strerror(errno));
