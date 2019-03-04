@@ -19,47 +19,10 @@ usage(const char *progname)
             progname);
 }
 
-int
-main(int argc, char **argv)
+static int
+main_loop(int cfd)
 {
-    struct sockaddr_un server_addr;
-    const char *path = NULL;
-    int opt;
-    int cfd;
-
-    while ((opt = getopt(argc, argv, "hp:")) != -1) {
-        switch (opt) {
-        case 'h':
-            usage(argv[0]);
-            return 0;
-
-        case 'p':
-            path = optarg;
-            break;
-        }
-    }
-
-    if (path == NULL) {
-        fprintf(stderr, "Missing UNIX socket path\n");
-        usage(argv[0]);
-        return -1;
-    }
-
-    cfd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (cfd < 0) {
-        fprintf(stderr, "socket(AF_UNIX) failed: %s\n", strerror(errno));
-        return -1;
-    }
-
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sun_family = AF_UNIX;
-    strncpy(server_addr.sun_path, path, sizeof(server_addr.sun_path) - 1);
-
-    if (connect(cfd, (const struct sockaddr *)&server_addr,
-                sizeof(server_addr)) < 0) {
-        fprintf(stderr, "connect(%s) failed: %s\n", path, strerror(errno));
-        return -1;
-    }
+    int ret = -1;
 
     for (;;) {
         ssize_t payload_size = 0;
@@ -124,8 +87,7 @@ main(int argc, char **argv)
 
         default:
             fprintf(stderr, "Invalid request type (%d)\n", msg.reqtype);
-            goto out;
-            break;
+            return -1;
         }
 
         if (payload_size != msg.size) {
@@ -169,8 +131,55 @@ main(int argc, char **argv)
         }
     }
 
-out:
+    return ret;
+}
+
+int
+main(int argc, char **argv)
+{
+    struct sockaddr_un server_addr;
+    const char *path = NULL;
+    int opt;
+    int cfd;
+    int ret;
+
+    while ((opt = getopt(argc, argv, "hp:")) != -1) {
+        switch (opt) {
+        case 'h':
+            usage(argv[0]);
+            return 0;
+
+        case 'p':
+            path = optarg;
+            break;
+        }
+    }
+
+    if (path == NULL) {
+        fprintf(stderr, "Missing UNIX socket path\n");
+        usage(argv[0]);
+        return -1;
+    }
+
+    cfd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (cfd < 0) {
+        fprintf(stderr, "socket(AF_UNIX) failed: %s\n", strerror(errno));
+        return -1;
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sun_family = AF_UNIX;
+    strncpy(server_addr.sun_path, path, sizeof(server_addr.sun_path) - 1);
+
+    if (connect(cfd, (const struct sockaddr *)&server_addr,
+                sizeof(server_addr)) < 0) {
+        fprintf(stderr, "connect(%s) failed: %s\n", path, strerror(errno));
+        return -1;
+    }
+
+    ret = main_loop(cfd);
+
     close(cfd);
 
-    return 0;
+    return ret;
 }
