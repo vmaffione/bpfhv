@@ -18,7 +18,8 @@
 #     # mkdir /dev/hugepages
 #     # mount -t hugetlbfs nodev /dev/hugepages
 
-sudo qemu-system-x86_64 /home/vmaffione/git/vm/netmap.qcow2 \
+IMG="${1:-/home/vmaffione/git/vm/netmap.qcow2}"
+sudo qemu-system-x86_64 ${IMG} \
         -enable-kvm -smp 2 -m 512M -vga std \
         -device e1000,netdev=mgmt,mac=00:AA:BB:CC:0a:99 \
         -netdev user,id=mgmt,hostfwd=tcp::20020-:22 \
