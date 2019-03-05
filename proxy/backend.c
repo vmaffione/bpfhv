@@ -9,6 +9,9 @@
 #include <assert.h>
 #include <poll.h>
 #include <inttypes.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 #include "bpfhv-proxy.h"
 #include "bpfhv.h"
@@ -31,6 +34,9 @@ typedef struct BpfhvBackendMemoryRegion {
 } BpfhvBackendMemoryRegion;
 
 typedef struct BpfhvBackend {
+    /* Path of the object file containing the ebpf programs. */
+    const char *progfile;
+
     /* The features we support. */
     uint64_t features_avail;
 
@@ -48,6 +54,7 @@ main_loop(int cfd)
     BpfhvBackend be = { };
     int ret = -1;
 
+    be.progfile = "proxy/sring_progs.o";
     be.features_avail = BPFHV_F_SG;
     be.features_sel = 0;
 
@@ -58,6 +65,10 @@ main_loop(int cfd)
         /* Variables to store recvmsg() ancillary data. */
         int fds[BPFHV_PROXY_MAX_REGIONS];
         size_t num_fds = 0;
+
+        /* Variables to store sendmsg() ancillary data. */
+        int outfds[BPFHV_PROXY_MAX_REGIONS];
+        size_t num_outfds = 0;
 
         /* Support variables for reading a bpfhv-proxy message header. */
         char control[CMSG_SPACE(BPFHV_PROXY_MAX_REGIONS * sizeof(fds[0]))] = {};
@@ -261,6 +272,13 @@ main_loop(int cfd)
         }
 
         case BPFHV_PROXY_REQ_GET_PROGRAMS:
+            outfds[0] = open(be.progfile, O_RDONLY, 0);
+            if (outfds[0] < 0) {
+                fprintf(stderr, "open(%s) failed: %s\n", be.progfile,
+                        strerror(errno));
+                return -1;
+            }
+            num_outfds = 1;
             break;
 
         case BPFHV_PROXY_REQ_RX_ENABLE:
@@ -302,6 +320,18 @@ main_loop(int cfd)
             } else if (n != totsize) {
                 fprintf(stderr, "Truncated send (%zu/%zu)\n", n, totsize);
                 break;
+            }
+        }
+
+        /* Close all the file descriptors passed as ancillary data. */
+        {
+            size_t i;
+
+            for (i = 0; i < num_fds; i++) {
+                close(fds[i]);
+            }
+            for (i = 0; i < num_outfds; i++) {
+                close(outfds[i]);
             }
         }
     }
