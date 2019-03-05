@@ -263,7 +263,7 @@ main_loop(BpfhvBackend *be)
 
         case BPFHV_PROXY_REQ_GET_PROGRAMS: {
             resp.hdr.reqtype = msg.hdr.reqtype;
-            resp.hdr.size = sizeof(resp.payload.u64);
+            resp.hdr.size = 0;
             outfds[0] = open(be->progfile, O_RDONLY, 0);
             if (outfds[0] < 0) {
                 fprintf(stderr, "open(%s) failed: %s\n", be->progfile,
