@@ -289,6 +289,7 @@ main_loop(BpfhvBackend *be)
 
         /* Send back the response, if any. */
         if (resp.hdr.reqtype != BPFHV_PROXY_REQ_NONE) {
+            char control[CMSG_SPACE(BPFHV_PROXY_MAX_REGIONS * sizeof(fds[0]))];
             size_t totsize = sizeof(resp.hdr) + resp.hdr.size;
             struct iovec iov = {
                 .iov_base = &resp,
@@ -297,9 +298,24 @@ main_loop(BpfhvBackend *be)
             struct msghdr mh = {
                 .msg_iov = &iov,
                 .msg_iovlen = 1,
-                //.msg_control = control,
-                //.msg_controllen = sizeof(control),
             };
+
+            if (num_outfds > 0) {
+                /* Set ancillary data. */
+                size_t data_size = num_outfds * sizeof(fds[0]);
+                struct cmsghdr *cmsg;
+
+                assert(num_outfds <= BPFHV_PROXY_MAX_REGIONS);
+
+                mh.msg_control = control;
+                mh.msg_controllen = CMSG_SPACE(data_size);
+
+                cmsg = CMSG_FIRSTHDR(&mh);
+                cmsg->cmsg_len = CMSG_LEN(data_size);
+                cmsg->cmsg_level = SOL_SOCKET;
+                cmsg->cmsg_type = SCM_RIGHTS;
+                memcpy(CMSG_DATA(cmsg), outfds, data_size);
+            }
 
             do {
                 n = sendmsg(be->cfd, &mh, 0);
