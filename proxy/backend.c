@@ -185,7 +185,7 @@ main_loop(int cfd)
         memset(&resp, 0, sizeof(resp));
         resp.hdr.reqtype = BPFHV_PROXY_REQ_NONE;
 
-        /* Process request. */
+        /* Process the request. */
         switch (msg.hdr.reqtype) {
         case BPFHV_PROXY_REQ_SET_FEATURES:
             be.features_sel = be.features_avail & msg.payload.u64;
