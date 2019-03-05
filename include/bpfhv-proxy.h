@@ -24,15 +24,20 @@ typedef struct BpfhvProxyMemoryMap {
     BpfhvProxyMemoryRegion  regions[BPFHV_PROXY_MAX_REGIONS];
 } BpfhvProxyMemoryMap;
 
+typedef enum BpfhvProxyDirection {
+    BPFHV_PROXY_DIR_RX = 1,
+    BPFHV_PROXY_DIR_TX,
+} BpfhvProxyDirection;
+
 typedef struct BpfhvProxyQueueCtx {
     uint32_t            queue_idx;
-    uint32_t            direction;
+    BpfhvProxyDirection direction;
     uint64_t            guest_physical_addr;
 } BpfhvProxyQueueCtx;
 
 typedef struct BpfhvProxyNotifier {
     uint32_t            queue_idx;
-    uint32_t            direction;
+    BpfhvProxyDirection direction;
 } BpfhvProxyNotifier;
 
 typedef enum BpfhvProxyReqType {

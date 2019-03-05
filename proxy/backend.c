@@ -274,11 +274,20 @@ main_loop(BpfhvBackend *be)
             break;
         }
 
+        case BPFHV_PROXY_REQ_SET_QUEUE_CTX: {
+            uint64_t gpa = msg.payload.queue_ctx.guest_physical_addr;
+            BpfhvProxyDirection dir = msg.payload.queue_ctx.direction;
+
+            printf("Queue %s%u, gpa %"PRIx64"\n",
+                   dir == BPFHV_PROXY_DIR_RX ? "RX" : "TX",
+                   msg.payload.queue_ctx.queue_idx, gpa);
+            break;
+        }
+
         case BPFHV_PROXY_REQ_RX_ENABLE:
         case BPFHV_PROXY_REQ_TX_ENABLE:
         case BPFHV_PROXY_REQ_RX_DISABLE:
         case BPFHV_PROXY_REQ_TX_DISABLE:
-        case BPFHV_PROXY_REQ_SET_QUEUE_CTX:
         case BPFHV_PROXY_REQ_SET_QUEUE_KICK:
         case BPFHV_PROXY_REQ_SET_QUEUE_IRQ:
             printf("Handling message ...\n");
