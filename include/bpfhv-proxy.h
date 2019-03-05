@@ -24,6 +24,18 @@ typedef struct BpfhvProxyMemoryMap {
     BpfhvProxyMemoryRegion  regions[BPFHV_PROXY_MAX_REGIONS];
 } BpfhvProxyMemoryMap;
 
+typedef struct BpfhvProxyParameters {
+    uint32_t        num_rx_queues;
+    uint32_t        num_tx_queues;
+    uint32_t        num_rx_bufs;
+    uint32_t        num_tx_bufs;
+} BpfhvProxyParameters;
+
+typedef struct BpfhvProxyCtxSizes {
+    uint32_t        rx_ctx_size;
+    uint32_t        tx_ctx_size;
+} BpfhvProxyCtxSizes;
+
 typedef enum BpfhvProxyDirection {
     BPFHV_PROXY_DIR_RX = 1,
     BPFHV_PROXY_DIR_TX,
@@ -44,7 +56,8 @@ typedef enum BpfhvProxyReqType {
     BPFHV_PROXY_REQ_NONE = 0,
     BPFHV_PROXY_REQ_GET_FEATURES,
     BPFHV_PROXY_REQ_SET_FEATURES,
-    BPFHV_PROXY_REQ_SET_NUM_QUEUES,
+    BPFHV_PROXY_REQ_SET_PARAMETERS,
+    BPFHV_PROXY_REQ_GET_CTX_SIZES,
     BPFHV_PROXY_REQ_GET_PROGRAMS,
     BPFHV_PROXY_REQ_SET_MEM_TABLE,
     BPFHV_PROXY_REQ_SET_QUEUE_CTX,
@@ -57,24 +70,34 @@ typedef enum BpfhvProxyReqType {
 } BpfhvProxyReqType;
 
 typedef union BpfhvProxyMsgPayload {
-    uint64_t            u64;
+    uint64_t                u64;
     /* Associated messages:
      *   - BPFHV_PROXY_REQ_GET_FEATURES (resp)
      *   - BPFHV_PROXY_REQ_SET_FEATURES
      *   - BPFHV_PROXY_REQ_SET_NUM_QUEUES
      */
 
-    BpfhvProxyMemoryMap memory_map;
+    BpfhvProxyParameters    params;
+    /* Associated messages:
+     *   - BPFHV_PROXY_REQ_SET_PARAMETERS
+     */
+
+    BpfhvProxyCtxSizes      ctx_sizes;
+    /* Associated messages:
+     *   - BPFHV_PROXY_REQ_GET_CTX_SIZES (resp)
+     */
+
+    BpfhvProxyMemoryMap     memory_map;
     /* Associated messages:
      *   - BPFHV_PROXY_REQ_SET_MEM_TABLE
      */
 
-    BpfhvProxyQueueCtx  queue_ctx;
+    BpfhvProxyQueueCtx      queue_ctx;
     /* Associated messages:
      *   - BPFHV_PROXY_REQ_SET_QUEUE_CTX
      */
 
-    BpfhvProxyNotifier  notify;
+    BpfhvProxyNotifier      notify;
     /* Associated messages:
      *   - BPFHV_PROXY_REQ_SET_QUEUE_KICK
      *   - BPFHV_PROXY_REQ_SET_QUEUE_IRQ

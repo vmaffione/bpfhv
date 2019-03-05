@@ -82,6 +82,16 @@ translate_addr(BpfhvBackend *be, uint64_t gpa, uint64_t len)
 }
 
 static int
+num_bufs_valid(uint64_t num_bufs)
+{
+    if (num_bufs < 16 || num_bufs > 8192 ||
+            (num_bufs & (num_bufs - 1)) != 0) {
+        return 0;
+    }
+    return 1;
+}
+
+static int
 main_loop(BpfhvBackend *be)
 {
     int ret = -1;
@@ -171,6 +181,7 @@ main_loop(BpfhvBackend *be)
         /* Check that payload size is correct. */
         switch (msg.hdr.reqtype) {
         case BPFHV_PROXY_REQ_GET_FEATURES:
+        case BPFHV_PROXY_REQ_GET_CTX_SIZES:
         case BPFHV_PROXY_REQ_GET_PROGRAMS:
         case BPFHV_PROXY_REQ_RX_ENABLE:
         case BPFHV_PROXY_REQ_TX_ENABLE:
@@ -180,8 +191,11 @@ main_loop(BpfhvBackend *be)
             break;
 
         case BPFHV_PROXY_REQ_SET_FEATURES:
-        case BPFHV_PROXY_REQ_SET_NUM_QUEUES:
             payload_size = sizeof(msg.payload.u64);
+            break;
+
+        case BPFHV_PROXY_REQ_SET_PARAMETERS:
+            payload_size = sizeof(msg.payload.params);
             break;
 
         case BPFHV_PROXY_REQ_SET_MEM_TABLE:
@@ -239,13 +253,27 @@ main_loop(BpfhvBackend *be)
             resp.payload.u64 = be->features_avail;
             break;
 
-        case BPFHV_PROXY_REQ_SET_NUM_QUEUES:
-            /* We only support a single queue pair for now, hence we
-             * ignore the value of msg.payload.u64. */
+        case BPFHV_PROXY_REQ_SET_PARAMETERS: {
+            BpfhvProxyParameters *params = &msg.payload.params;
+
             resp.hdr.reqtype = msg.hdr.reqtype;
             resp.hdr.size = sizeof(resp.payload.u64);
-            resp.payload.u64 = 1;
+            if (params->num_rx_queues != 1 || params->num_tx_queues != 1) {
+                resp.payload.u64 = 1;
+            } else if (!num_bufs_valid(params->num_rx_bufs) ||
+                       !num_bufs_valid(params->num_tx_bufs)) {
+                resp.payload.u64 = 1;
+            } else {
+                resp.payload.u64 = 0;  /* ok */
+                printf("Set queue parameters: %u queues, %u rx bufs, "
+                       "%u tx bufs\n",
+                        (unsigned int)params->num_tx_queues,
+                        (unsigned int)params->num_rx_bufs,
+                        (unsigned int)params->num_tx_bufs);
+            }
+
             break;
+        }
 
         case BPFHV_PROXY_REQ_SET_MEM_TABLE: {
             BpfhvProxyMemoryMap *map = &msg.payload.memory_map;
