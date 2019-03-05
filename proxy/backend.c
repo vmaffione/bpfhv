@@ -16,12 +16,21 @@
 #include "bpfhv-proxy.h"
 #include "bpfhv.h"
 
+#ifndef likely
+#define likely(x)           __builtin_expect((x), 1)
+#endif
+#ifndef unlikely
+#define unlikely(x)         __builtin_expect((x), 0)
+#endif
+
 typedef struct BpfhvBackendMemoryRegion {
-    uint64_t    gpa;
+    uint64_t    gpa_start;
+    uint64_t    gpa_end;
     uint64_t    size;
-    uint64_t    hva;
+    uint64_t    hv_vaddr;
     uint64_t    mmap_offset;
     void        *mmap_addr;
+    void        *va_start;
 } BpfhvBackendMemoryRegion;
 
 typedef struct BpfhvBackend {
@@ -42,6 +51,35 @@ typedef struct BpfhvBackend {
     BpfhvBackendMemoryRegion regions[BPFHV_PROXY_MAX_REGIONS];
     size_t num_regions;
 } BpfhvBackend;
+
+/* This is not thread-safe at the moment being. */
+static void *
+translate_addr(BpfhvBackend *be, uint64_t gpa, uint64_t len)
+{
+    BpfhvBackendMemoryRegion  *re = be->regions + 0;
+
+    if (unlikely(!(re->gpa_start <= gpa && gpa + len <= re->gpa_end))) {
+        int i;
+
+        for (i = 1; i < be->num_regions; i++) {
+            re = be->regions + i;
+            if (re->gpa_start <= gpa && gpa + len <= re->gpa_end) {
+                /* Match. Move this entry to the first position. */
+                BpfhvBackendMemoryRegion tmp = *re;
+
+                *re = be->regions[0];
+                be->regions[0] = tmp;
+                re = be->regions + 0;
+                break;
+            }
+        }
+        if (i >= be->num_regions) {
+            return NULL;
+        }
+    }
+
+    return re->va_start + (gpa - re->gpa_start);
+}
 
 static int
 main_loop(BpfhvBackend *be)
@@ -238,9 +276,12 @@ main_loop(BpfhvBackend *be)
             for (i = 0; i < map->num_regions; i++) {
                 void *mmap_addr;
 
-                be->regions[i].gpa = map->regions[i].guest_physical_addr;
+                be->regions[i].gpa_start = map->regions[i].guest_physical_addr;
                 be->regions[i].size = map->regions[i].size;
-                be->regions[i].hva = map->regions[i].hypervisor_virtual_addr;
+                be->regions[i].gpa_end = be->regions[i].gpa_start +
+                                         be->regions[i].size;
+                be->regions[i].hv_vaddr =
+                        map->regions[i].hypervisor_virtual_addr;
                 be->regions[i].mmap_offset = map->regions[i].mmap_offset;
 
                 /* We don't feed mmap_offset into the offset argument of
@@ -252,21 +293,24 @@ main_loop(BpfhvBackend *be)
                                  be->regions[i].size, PROT_READ | PROT_WRITE,
                                  MAP_SHARED, /*fd=*/fds[i], /*offset=*/0);
                 if (mmap_addr == MAP_FAILED) {
-                    fprintf(stderr, "mmap(#%zu) failed: %s\n", i, strerror(errno));
+                    fprintf(stderr, "mmap(#%zu) failed: %s\n", i,
+                            strerror(errno));
                     return -1;
                 }
                 be->regions[i].mmap_addr = mmap_addr;
+                be->regions[i].va_start = mmap_addr +
+                                          be->regions[i].mmap_offset;
             }
             be->num_regions = map->num_regions;
 
             printf("Guest memory map:\n");
             for (i = 0; i < be->num_regions; i++) {
                 printf("    gpa %16"PRIx64", size %16"PRIu64", "
-                       "hva %16"PRIx64", mmap_ofs %16"PRIx64", "
-                       "mmap_addr %p\n",
-                       be->regions[i].gpa, be->regions[i].size,
-                       be->regions[i].hva, be->regions[i].mmap_offset,
-                       be->regions[i].mmap_addr);
+                       "hv_vaddr %16"PRIx64", mmap_ofs %16"PRIx64", "
+                       "va_start %p\n",
+                       be->regions[i].gpa_start, be->regions[i].size,
+                       be->regions[i].hv_vaddr, be->regions[i].mmap_offset,
+                       be->regions[i].va_start);
             }
             break;
         }
@@ -287,10 +331,15 @@ main_loop(BpfhvBackend *be)
         case BPFHV_PROXY_REQ_SET_QUEUE_CTX: {
             uint64_t gpa = msg.payload.queue_ctx.guest_physical_addr;
             BpfhvProxyDirection dir = msg.payload.queue_ctx.direction;
+            void *queue_vaddr = translate_addr(be, gpa, /*TODO*/128);
 
-            printf("Queue %s%u, gpa %"PRIx64"\n",
+            if (gpa && queue_vaddr == NULL) {
+                fprintf(stderr, "Failed to translate gpa %"PRIx64"\n", gpa);
+                break;
+            }
+            printf("Queue %s%u, gpa %"PRIx64", va %p\n",
                    dir == BPFHV_PROXY_DIR_RX ? "RX" : "TX",
-                   msg.payload.queue_ctx.queue_idx, gpa);
+                   msg.payload.queue_ctx.queue_idx, gpa, queue_vaddr);
             break;
         }
 
