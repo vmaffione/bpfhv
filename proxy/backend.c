@@ -16,15 +16,6 @@
 #include "bpfhv-proxy.h"
 #include "bpfhv.h"
 
-static void
-usage(const char *progname)
-{
-    printf("%s:\n"
-           "    -h (show this help and exit)\n"
-           "    -p UNIX_SOCKET_PATH\n",
-            progname);
-}
-
 typedef struct BpfhvBackendMemoryRegion {
     uint64_t    gpa;
     uint64_t    size;
@@ -34,6 +25,10 @@ typedef struct BpfhvBackendMemoryRegion {
 } BpfhvBackendMemoryRegion;
 
 typedef struct BpfhvBackend {
+    /* Socket file descriptor to exchange control message with the
+     * hypervisor. */
+    int cfd;
+
     /* Path of the object file containing the ebpf programs. */
     const char *progfile;
 
@@ -49,14 +44,12 @@ typedef struct BpfhvBackend {
 } BpfhvBackend;
 
 static int
-main_loop(int cfd)
+main_loop(BpfhvBackend *be)
 {
-    BpfhvBackend be = { };
     int ret = -1;
 
-    be.progfile = "proxy/sring_progs.o";
-    be.features_avail = BPFHV_F_SG;
-    be.features_sel = 0;
+    be->features_avail = BPFHV_F_SG;
+    be->features_sel = 0;
 
     for (;;) {
         ssize_t payload_size = 0;
@@ -89,7 +82,7 @@ main_loop(int cfd)
         /* Wait for the next message to arrive. */
         struct pollfd pfd[1];
 
-        pfd[0].fd = cfd;
+        pfd[0].fd = be->cfd;
         pfd[0].events = POLLIN;
         n = poll(pfd, sizeof(pfd)/sizeof(pfd[0]), -1);
         assert(n != 0);
@@ -101,7 +94,7 @@ main_loop(int cfd)
         /* Read a bpfhv-proxy message header plus ancillary data. */
         memset(&msg.hdr, 0, sizeof(msg.hdr));
         do {
-            n = recvmsg(cfd, &mh, 0);
+            n = recvmsg(be->cfd, &mh, 0);
         } while (n < 0 && (errno == EINTR || errno == EAGAIN));
         if (n < 0) {
             fprintf(stderr, "recvmsg(cfd) failed: %s\n", strerror(errno));
@@ -180,7 +173,7 @@ main_loop(int cfd)
         /* Read payload. */
         memset(&msg.payload, 0, sizeof(msg.payload));
         do {
-            n = read(cfd, &msg.payload, payload_size);
+            n = read(be->cfd, &msg.payload, payload_size);
         } while (n < 0 && (errno == EINTR || errno == EAGAIN));
         if (n < 0) {
             fprintf(stderr, "read(cfd, payload) failed: %s\n",
@@ -200,13 +193,13 @@ main_loop(int cfd)
         /* Process the request. */
         switch (msg.hdr.reqtype) {
         case BPFHV_PROXY_REQ_SET_FEATURES:
-            be.features_sel = be.features_avail & msg.payload.u64;
+            be->features_sel = be->features_avail & msg.payload.u64;
             break;
 
         case BPFHV_PROXY_REQ_GET_FEATURES:
             resp.hdr.reqtype = msg.hdr.reqtype;
             resp.hdr.size = sizeof(resp.payload.u64);
-            resp.payload.u64 = be.features_avail;
+            resp.payload.u64 = be->features_avail;
             break;
 
         case BPFHV_PROXY_REQ_SET_MEM_TABLE: {
@@ -227,54 +220,54 @@ main_loop(int cfd)
             }
 
             /* Clean up previous table. */
-            for (i = 0; i < be.num_regions; i++) {
-                munmap(be.regions[i].mmap_addr,
-                       be.regions[i].mmap_offset + be.regions[i].size);
+            for (i = 0; i < be->num_regions; i++) {
+                munmap(be->regions[i].mmap_addr,
+                       be->regions[i].mmap_offset + be->regions[i].size);
             }
-            memset(be.regions, 0, sizeof(be.regions));
-            be.num_regions = 0;
+            memset(be->regions, 0, sizeof(be->regions));
+            be->num_regions = 0;
 
             /* Setup the new table. */
             for (i = 0; i < map->num_regions; i++) {
                 void *mmap_addr;
 
-                be.regions[i].gpa = map->regions[i].guest_physical_addr;
-                be.regions[i].size = map->regions[i].size;
-                be.regions[i].hva = map->regions[i].hypervisor_virtual_addr;
-                be.regions[i].mmap_offset = map->regions[i].mmap_offset;
+                be->regions[i].gpa = map->regions[i].guest_physical_addr;
+                be->regions[i].size = map->regions[i].size;
+                be->regions[i].hva = map->regions[i].hypervisor_virtual_addr;
+                be->regions[i].mmap_offset = map->regions[i].mmap_offset;
 
                 /* We don't feed mmap_offset into the offset argument of
                  * mmap(), because the mapped address has to be page aligned,
                  * and we use huge pages. Instead, we map the file descriptor
                  * from the beginning, with a map size that includes the
                  * region of interest. */
-                mmap_addr = mmap(0, /*size=*/be.regions[i].mmap_offset +
-                                 be.regions[i].size, PROT_READ | PROT_WRITE,
+                mmap_addr = mmap(0, /*size=*/be->regions[i].mmap_offset +
+                                 be->regions[i].size, PROT_READ | PROT_WRITE,
                                  MAP_SHARED, /*fd=*/fds[i], /*offset=*/0);
                 if (mmap_addr == MAP_FAILED) {
                     fprintf(stderr, "mmap(#%zu) failed: %s\n", i, strerror(errno));
                     return -1;
                 }
-                be.regions[i].mmap_addr = mmap_addr;
+                be->regions[i].mmap_addr = mmap_addr;
             }
-            be.num_regions = map->num_regions;
+            be->num_regions = map->num_regions;
 
             printf("Guest memory map:\n");
-            for (i = 0; i < be.num_regions; i++) {
+            for (i = 0; i < be->num_regions; i++) {
                 printf("    gpa %16"PRIx64", size %16"PRIu64", "
                        "hva %16"PRIx64", mmap_ofs %16"PRIx64", "
                        "mmap_addr %p\n",
-                       be.regions[i].gpa, be.regions[i].size,
-                       be.regions[i].hva, be.regions[i].mmap_offset,
-                       be.regions[i].mmap_addr);
+                       be->regions[i].gpa, be->regions[i].size,
+                       be->regions[i].hva, be->regions[i].mmap_offset,
+                       be->regions[i].mmap_addr);
             }
             break;
         }
 
         case BPFHV_PROXY_REQ_GET_PROGRAMS:
-            outfds[0] = open(be.progfile, O_RDONLY, 0);
+            outfds[0] = open(be->progfile, O_RDONLY, 0);
             if (outfds[0] < 0) {
-                fprintf(stderr, "open(%s) failed: %s\n", be.progfile,
+                fprintf(stderr, "open(%s) failed: %s\n", be->progfile,
                         strerror(errno));
                 return -1;
             }
@@ -312,7 +305,7 @@ main_loop(int cfd)
             };
 
             do {
-                n = sendmsg(cfd, &mh, 0);
+                n = sendmsg(be->cfd, &mh, 0);
             } while (n < 0 && (errno == EINTR || errno == EAGAIN));
             if (n < 0) {
                 fprintf(stderr, "sendmsg(cfd) failed: %s\n", strerror(errno));
@@ -339,16 +332,29 @@ main_loop(int cfd)
     return ret;
 }
 
+static void
+usage(const char *progname)
+{
+    printf("%s:\n"
+           "    -h (show this help and exit)\n"
+           "    -p UNIX_SOCKET_PATH\n"
+           "    -f EBPF_PROGS_PATH\n",
+            progname);
+}
+
 int
 main(int argc, char **argv)
 {
     struct sockaddr_un server_addr;
     const char *path = NULL;
+    BpfhvBackend be = { };
     int opt;
     int cfd;
     int ret;
 
-    while ((opt = getopt(argc, argv, "hp:")) != -1) {
+    be.progfile = "proxy/sring_progs.o";
+
+    while ((opt = getopt(argc, argv, "hp:f:")) != -1) {
         switch (opt) {
         case 'h':
             usage(argv[0]);
@@ -356,6 +362,10 @@ main(int argc, char **argv)
 
         case 'p':
             path = optarg;
+            break;
+
+        case 'f':
+            be.progfile = optarg;
             break;
         }
     }
@@ -382,8 +392,8 @@ main(int argc, char **argv)
         return -1;
     }
 
-    ret = main_loop(cfd);
-
+    be.cfd = cfd;
+    ret = main_loop(&be);
     close(cfd);
 
     return ret;
