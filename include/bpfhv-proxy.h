@@ -44,6 +44,7 @@ typedef enum BpfhvProxyReqType {
     BPFHV_PROXY_REQ_NONE = 0,
     BPFHV_PROXY_REQ_GET_FEATURES,
     BPFHV_PROXY_REQ_SET_FEATURES,
+    BPFHV_PROXY_REQ_SET_NUM_QUEUES,
     BPFHV_PROXY_REQ_GET_PROGRAMS,
     BPFHV_PROXY_REQ_SET_MEM_TABLE,
     BPFHV_PROXY_REQ_SET_QUEUE_CTX,
@@ -60,6 +61,7 @@ typedef union BpfhvProxyMsgPayload {
     /* Associated messages:
      *   - BPFHV_PROXY_REQ_GET_FEATURES (resp)
      *   - BPFHV_PROXY_REQ_SET_FEATURES
+     *   - BPFHV_PROXY_REQ_SET_NUM_QUEUES
      */
 
     BpfhvProxyMemoryMap memory_map;

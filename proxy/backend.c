@@ -142,6 +142,7 @@ main_loop(BpfhvBackend *be)
             break;
 
         case BPFHV_PROXY_REQ_SET_FEATURES:
+        case BPFHV_PROXY_REQ_SET_NUM_QUEUES:
             payload_size = sizeof(msg.payload.u64);
             break;
 
@@ -191,12 +192,21 @@ main_loop(BpfhvBackend *be)
         switch (msg.hdr.reqtype) {
         case BPFHV_PROXY_REQ_SET_FEATURES:
             be->features_sel = be->features_avail & msg.payload.u64;
+            printf("Negotiated features %"PRIx64"\n", be->features_sel);
             break;
 
         case BPFHV_PROXY_REQ_GET_FEATURES:
             resp.hdr.reqtype = msg.hdr.reqtype;
             resp.hdr.size = sizeof(resp.payload.u64);
             resp.payload.u64 = be->features_avail;
+            break;
+
+        case BPFHV_PROXY_REQ_SET_NUM_QUEUES:
+            /* We only support a single queue pair for now, hence we
+             * ignore the value of msg.payload.u64. */
+            resp.hdr.reqtype = msg.hdr.reqtype;
+            resp.hdr.size = sizeof(resp.payload.u64);
+            resp.payload.u64 = 1;
             break;
 
         case BPFHV_PROXY_REQ_SET_MEM_TABLE: {
