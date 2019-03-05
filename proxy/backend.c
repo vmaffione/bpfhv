@@ -261,7 +261,9 @@ main_loop(BpfhvBackend *be)
             break;
         }
 
-        case BPFHV_PROXY_REQ_GET_PROGRAMS:
+        case BPFHV_PROXY_REQ_GET_PROGRAMS: {
+            resp.hdr.reqtype = msg.hdr.reqtype;
+            resp.hdr.size = sizeof(resp.payload.u64);
             outfds[0] = open(be->progfile, O_RDONLY, 0);
             if (outfds[0] < 0) {
                 fprintf(stderr, "open(%s) failed: %s\n", be->progfile,
@@ -270,6 +272,7 @@ main_loop(BpfhvBackend *be)
             }
             num_outfds = 1;
             break;
+        }
 
         case BPFHV_PROXY_REQ_RX_ENABLE:
         case BPFHV_PROXY_REQ_TX_ENABLE:
