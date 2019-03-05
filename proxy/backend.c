@@ -130,6 +130,7 @@ main_loop(int cfd)
         /* Check that payload size is correct. */
         switch (msg.hdr.reqtype) {
         case BPFHV_PROXY_REQ_GET_FEATURES:
+        case BPFHV_PROXY_REQ_GET_PROGRAMS:
         case BPFHV_PROXY_REQ_RX_ENABLE:
         case BPFHV_PROXY_REQ_TX_ENABLE:
         case BPFHV_PROXY_REQ_RX_DISABLE:
@@ -259,6 +260,9 @@ main_loop(int cfd)
             break;
         }
 
+        case BPFHV_PROXY_REQ_GET_PROGRAMS:
+            break;
+
         case BPFHV_PROXY_REQ_RX_ENABLE:
         case BPFHV_PROXY_REQ_TX_ENABLE:
         case BPFHV_PROXY_REQ_RX_DISABLE:
@@ -278,15 +282,25 @@ main_loop(int cfd)
         /* Send back the response, if any. */
         if (resp.hdr.reqtype != BPFHV_PROXY_REQ_NONE) {
             size_t totsize = sizeof(resp.hdr) + resp.hdr.size;
+            struct iovec iov = {
+                .iov_base = &resp,
+                .iov_len = totsize,
+            };
+            struct msghdr mh = {
+                .msg_iov = &iov,
+                .msg_iovlen = 1,
+                //.msg_control = control,
+                //.msg_controllen = sizeof(control),
+            };
 
             do {
-                n = write(cfd, &resp, totsize);
+                n = sendmsg(cfd, &mh, 0);
             } while (n < 0 && (errno == EINTR || errno == EAGAIN));
             if (n < 0) {
-                fprintf(stderr, "write(cfd) failed: %s\n", strerror(errno));
+                fprintf(stderr, "sendmsg(cfd) failed: %s\n", strerror(errno));
                 break;
             } else if (n != totsize) {
-                fprintf(stderr, "Truncated write (%zu/%zu)\n", n, totsize);
+                fprintf(stderr, "Truncated send (%zu/%zu)\n", n, totsize);
                 break;
             }
         }
