@@ -53,7 +53,7 @@ main_loop(BpfhvBackend *be)
 
     for (;;) {
         ssize_t payload_size = 0;
-        BpfhvProxyMessage resp;
+        BpfhvProxyMessage resp = { };
 
         /* Variables to store recvmsg() ancillary data. */
         int fds[BPFHV_PROXY_MAX_REGIONS];
@@ -65,7 +65,7 @@ main_loop(BpfhvBackend *be)
 
         /* Support variables for reading a bpfhv-proxy message header. */
         char control[CMSG_SPACE(BPFHV_PROXY_MAX_REGIONS * sizeof(fds[0]))] = {};
-        BpfhvProxyMessage msg;
+        BpfhvProxyMessage msg = { };
         struct iovec iov = {
             .iov_base = &msg.hdr,
             .iov_len = sizeof(msg.hdr),
@@ -92,7 +92,6 @@ main_loop(BpfhvBackend *be)
         }
 
         /* Read a bpfhv-proxy message header plus ancillary data. */
-        memset(&msg.hdr, 0, sizeof(msg.hdr));
         do {
             n = recvmsg(be->cfd, &mh, 0);
         } while (n < 0 && (errno == EINTR || errno == EAGAIN));
@@ -171,7 +170,6 @@ main_loop(BpfhvBackend *be)
         }
 
         /* Read payload. */
-        memset(&msg.payload, 0, sizeof(msg.payload));
         do {
             n = read(be->cfd, &msg.payload, payload_size);
         } while (n < 0 && (errno == EINTR || errno == EAGAIN));
@@ -187,7 +185,6 @@ main_loop(BpfhvBackend *be)
             break;
         }
 
-        memset(&resp, 0, sizeof(resp));
         resp.hdr.reqtype = BPFHV_PROXY_REQ_NONE;
 
         /* Process the request. */
@@ -345,7 +342,7 @@ usage(const char *progname)
 int
 main(int argc, char **argv)
 {
-    struct sockaddr_un server_addr;
+    struct sockaddr_un server_addr = { };
     const char *path = NULL;
     BpfhvBackend be = { };
     int opt;
@@ -382,7 +379,6 @@ main(int argc, char **argv)
         return -1;
     }
 
-    memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sun_family = AF_UNIX;
     strncpy(server_addr.sun_path, path, sizeof(server_addr.sun_path) - 1);
 
