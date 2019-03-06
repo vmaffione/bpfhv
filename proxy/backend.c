@@ -15,6 +15,7 @@
 
 #include "bpfhv-proxy.h"
 #include "bpfhv.h"
+#include "sring.h"
 
 #ifndef likely
 #define likely(x)           __builtin_expect((x), 1)
@@ -33,6 +34,7 @@ typedef struct BpfhvBackendMemoryRegion {
     void        *va_start;
 } BpfhvBackendMemoryRegion;
 
+/* Main data structure supporting a single bpfhv vNIC. */
 typedef struct BpfhvBackend {
     /* Socket file descriptor to exchange control message with the
      * hypervisor. */
@@ -50,9 +52,15 @@ typedef struct BpfhvBackend {
     /* Guest memory map. */
     BpfhvBackendMemoryRegion regions[BPFHV_PROXY_MAX_REGIONS];
     size_t num_regions;
+
+    /* Queue parameters. */
+    unsigned int num_queues;
+    unsigned int num_rx_bufs;
+    unsigned int num_tx_bufs;
 } BpfhvBackend;
 
-/* This is not thread-safe at the moment being. */
+/* Translate guest physical address into host virtual address.
+ * This is not thread-safe at the moment being. */
 static void *
 translate_addr(BpfhvBackend *be, uint64_t gpa, uint64_t len)
 {
@@ -91,6 +99,26 @@ num_bufs_valid(uint64_t num_bufs)
     return 1;
 }
 
+/*
+ * The sring implementation.
+ */
+
+static size_t
+sring_rx_ctx_size(size_t num_rx_bufs)
+{
+    return sizeof(struct bpfhv_rx_context) + sizeof(struct sring_rx_context) +
+	num_rx_bufs * sizeof(struct sring_rx_desc);
+}
+
+static size_t
+sring_tx_ctx_size(size_t num_tx_bufs)
+{
+    return sizeof(struct bpfhv_tx_context) + sizeof(struct sring_tx_context) +
+	num_tx_bufs * sizeof(struct sring_tx_desc);
+}
+
+
+/* Control loop to process requests coming from the hypervisor. */
 static int
 main_loop(BpfhvBackend *be)
 {
@@ -265,13 +293,24 @@ main_loop(BpfhvBackend *be)
                 resp.payload.u64 = 1;
             } else {
                 resp.payload.u64 = 0;  /* ok */
+                be->num_queues = (unsigned int)params->num_rx_queues;
+                be->num_rx_bufs = (unsigned int)params->num_rx_bufs;
+                be->num_tx_bufs = (unsigned int)params->num_tx_bufs;
                 printf("Set queue parameters: %u queues, %u rx bufs, "
-                       "%u tx bufs\n",
-                        (unsigned int)params->num_tx_queues,
-                        (unsigned int)params->num_rx_bufs,
-                        (unsigned int)params->num_tx_bufs);
+                       "%u tx bufs\n", be->num_queues,
+                        be->num_rx_bufs, be->num_tx_bufs);
             }
 
+            break;
+        }
+
+        case BPFHV_PROXY_REQ_GET_CTX_SIZES: {
+            resp.hdr.reqtype = msg.hdr.reqtype;
+            resp.hdr.size = sizeof(resp.payload.ctx_sizes);
+            resp.payload.ctx_sizes.rx_ctx_size =
+                sring_rx_ctx_size(be->num_rx_bufs);
+            resp.payload.ctx_sizes.tx_ctx_size =
+                sring_tx_ctx_size(be->num_tx_bufs);
             break;
         }
 
