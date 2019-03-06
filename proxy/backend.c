@@ -217,7 +217,6 @@ main_loop(BpfhvBackend *be)
         /* Check that payload size is correct. */
         switch (msg.hdr.reqtype) {
         case BPFHV_PROXY_REQ_GET_FEATURES:
-        case BPFHV_PROXY_REQ_GET_CTX_SIZES:
         case BPFHV_PROXY_REQ_GET_PROGRAMS:
         case BPFHV_PROXY_REQ_RX_ENABLE:
         case BPFHV_PROXY_REQ_TX_ENABLE:
@@ -304,17 +303,13 @@ main_loop(BpfhvBackend *be)
                 printf("Set queue parameters: %u queues, %u rx bufs, "
                        "%u tx bufs\n", be->num_queues,
                         be->num_rx_bufs, be->num_tx_bufs);
+
+                resp.hdr.size = sizeof(resp.payload.ctx_sizes);
+                resp.payload.ctx_sizes.rx_ctx_size =
+                    sring_rx_ctx_size(be->num_rx_bufs);
+                resp.payload.ctx_sizes.tx_ctx_size =
+                    sring_tx_ctx_size(be->num_tx_bufs);
             }
-
-            break;
-        }
-
-        case BPFHV_PROXY_REQ_GET_CTX_SIZES: {
-            resp.hdr.size = sizeof(resp.payload.ctx_sizes);
-            resp.payload.ctx_sizes.rx_ctx_size =
-                sring_rx_ctx_size(be->num_rx_bufs);
-            resp.payload.ctx_sizes.tx_ctx_size =
-                sring_tx_ctx_size(be->num_tx_bufs);
             break;
         }
 
