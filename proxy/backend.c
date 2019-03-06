@@ -206,6 +206,14 @@ main_loop(BpfhvBackend *be)
             break;
         }
 
+        if ((msg.hdr.flags & BPFHV_PROXY_F_VERSION_MASK)
+                != BPFHV_PROXY_VERSION) {
+            fprintf(stderr, "Protocol version mismatch: expected %u, got %u",
+                    BPFHV_PROXY_VERSION,
+                    msg.hdr.flags & BPFHV_PROXY_F_VERSION_MASK);
+            break;
+        }
+
         /* Check that payload size is correct. */
         switch (msg.hdr.reqtype) {
         case BPFHV_PROXY_REQ_GET_FEATURES:
@@ -266,7 +274,8 @@ main_loop(BpfhvBackend *be)
             break;
         }
 
-        resp.hdr.reqtype = BPFHV_PROXY_REQ_NONE;
+        resp.hdr.reqtype = msg.hdr.reqtype;
+        resp.hdr.flags = BPFHV_PROXY_VERSION;
 
         /* Process the request. */
         switch (msg.hdr.reqtype) {
@@ -276,7 +285,6 @@ main_loop(BpfhvBackend *be)
             break;
 
         case BPFHV_PROXY_REQ_GET_FEATURES:
-            resp.hdr.reqtype = msg.hdr.reqtype;
             resp.hdr.size = sizeof(resp.payload.u64);
             resp.payload.u64 = be->features_avail;
             break;
@@ -284,15 +292,12 @@ main_loop(BpfhvBackend *be)
         case BPFHV_PROXY_REQ_SET_PARAMETERS: {
             BpfhvProxyParameters *params = &msg.payload.params;
 
-            resp.hdr.reqtype = msg.hdr.reqtype;
-            resp.hdr.size = sizeof(resp.payload.u64);
             if (params->num_rx_queues != 1 || params->num_tx_queues != 1) {
-                resp.payload.u64 = 1;
+                resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
             } else if (!num_bufs_valid(params->num_rx_bufs) ||
                        !num_bufs_valid(params->num_tx_bufs)) {
-                resp.payload.u64 = 1;
+                resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
             } else {
-                resp.payload.u64 = 0;  /* ok */
                 be->num_queues = (unsigned int)params->num_rx_queues;
                 be->num_rx_bufs = (unsigned int)params->num_rx_bufs;
                 be->num_tx_bufs = (unsigned int)params->num_tx_bufs;
@@ -305,7 +310,6 @@ main_loop(BpfhvBackend *be)
         }
 
         case BPFHV_PROXY_REQ_GET_CTX_SIZES: {
-            resp.hdr.reqtype = msg.hdr.reqtype;
             resp.hdr.size = sizeof(resp.payload.ctx_sizes);
             resp.payload.ctx_sizes.rx_ctx_size =
                 sring_rx_ctx_size(be->num_rx_bufs);
@@ -320,11 +324,13 @@ main_loop(BpfhvBackend *be)
 
             /* Perform sanity checks. */
             if (map->num_regions > BPFHV_PROXY_MAX_REGIONS) {
+                resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
                 fprintf(stderr, "Too many memory regions: %u\n",
                         map->num_regions);
                 return -1;
             }
             if (num_fds != map->num_regions) {
+                resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
                 fprintf(stderr, "Mismatch between number of regions (%u) and "
                         "number of file descriptors (%zu)\n",
                         map->num_regions, num_fds);
@@ -383,13 +389,13 @@ main_loop(BpfhvBackend *be)
         }
 
         case BPFHV_PROXY_REQ_GET_PROGRAMS: {
-            resp.hdr.reqtype = msg.hdr.reqtype;
             resp.hdr.size = 0;
             outfds[0] = open(be->progfile, O_RDONLY, 0);
             if (outfds[0] < 0) {
+                resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
                 fprintf(stderr, "open(%s) failed: %s\n", be->progfile,
                         strerror(errno));
-                return -1;
+                break;
             }
             num_outfds = 1;
             break;
@@ -401,6 +407,7 @@ main_loop(BpfhvBackend *be)
             void *queue_vaddr = translate_addr(be, gpa, /*TODO*/128);
 
             if (gpa && queue_vaddr == NULL) {
+                resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
                 fprintf(stderr, "Failed to translate gpa %"PRIx64"\n", gpa);
                 break;
             }
@@ -425,8 +432,8 @@ main_loop(BpfhvBackend *be)
             break;
         }
 
-        /* Send back the response, if any. */
-        if (resp.hdr.reqtype != BPFHV_PROXY_REQ_NONE) {
+        /* Send back the response. */
+        {
             char control[CMSG_SPACE(BPFHV_PROXY_MAX_REGIONS * sizeof(fds[0]))];
             size_t totsize = sizeof(resp.hdr) + resp.hdr.size;
             struct iovec iov = {

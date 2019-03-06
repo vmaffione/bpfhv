@@ -107,6 +107,9 @@ typedef union BpfhvProxyMsgPayload {
 typedef struct BpfhvProxyMsgHeader {
     BpfhvProxyReqType       reqtype;
     uint32_t                flags;
+#define BPFHV_PROXY_VERSION             1
+#define BPFHV_PROXY_F_VERSION_MASK      0x7
+#define BPFHV_PROXY_F_ERROR             0x8
     uint32_t                size;
 } BpfhvProxyMsgHeader;
 
