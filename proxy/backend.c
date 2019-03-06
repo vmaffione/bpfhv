@@ -72,6 +72,13 @@ typedef struct BpfhvBackend {
     unsigned int num_rx_bufs;
     unsigned int num_tx_bufs;
 
+    /* Flags defined for BPFHV_REG_STATUS. */
+    uint32_t status;
+
+    /* Is the backend running, (e.g. actively processing packets or
+     * waiting for more processing to come) ? */
+    unsigned int running;
+
     /* RX and TX queues. */
     BpfhvBackendRxq rxqs[BPFHV_MAX_QUEUES];
     BpfhvBackendTxq txqs[BPFHV_MAX_QUEUES];
@@ -107,16 +114,6 @@ translate_addr(BpfhvBackend *be, uint64_t gpa, uint64_t len)
     return re->va_start + (gpa - re->gpa_start);
 }
 
-static int
-num_bufs_valid(uint64_t num_bufs)
-{
-    if (num_bufs < 16 || num_bufs > 8192 ||
-            (num_bufs & (num_bufs - 1)) != 0) {
-        return 0;
-    }
-    return 1;
-}
-
 /*
  * The sring implementation.
  */
@@ -135,6 +132,32 @@ sring_tx_ctx_size(size_t num_tx_bufs)
 	num_tx_bufs * sizeof(struct sring_tx_desc);
 }
 
+/* Helper function to validate the number of buffers. */
+static int
+num_bufs_valid(uint64_t num_bufs)
+{
+    if (num_bufs < 16 || num_bufs > 8192 ||
+            (num_bufs & (num_bufs - 1)) != 0) {
+        return 0;
+    }
+    return 1;
+}
+
+/* Is the backend ready to process packets ? */
+static int
+backend_ready(BpfhvBackend *be)
+{
+    int i;
+
+    for (i = 0; i < be->num_queues; i++) {
+        if (be->rxqs[i].ctx == NULL || be->txqs[i].ctx == NULL) {
+            return 0;
+        }
+    }
+
+    return be->num_queues > 0 && num_bufs_valid(be->num_rx_bufs) &&
+           num_bufs_valid(be->num_tx_bufs) && be->num_regions > 0;
+}
 
 /* Control loop to process requests coming from the hypervisor. */
 static int
@@ -145,6 +168,11 @@ main_loop(BpfhvBackend *be)
 
     be->features_avail = BPFHV_F_SG;
     be->features_sel = 0;
+    be->num_queues = 0;
+    be->num_rx_bufs = 0;
+    be->num_tx_bufs = 0;
+    be->running = 0;
+    be->status = 0;
 
     for (i = 0; i < BPFHV_MAX_QUEUES; i++) {
         be->rxqs[i].ctx = NULL;
@@ -505,11 +533,52 @@ main_loop(BpfhvBackend *be)
         }
 
         case BPFHV_PROXY_REQ_RX_ENABLE:
-        case BPFHV_PROXY_REQ_TX_ENABLE:
-        case BPFHV_PROXY_REQ_RX_DISABLE:
-        case BPFHV_PROXY_REQ_TX_DISABLE:
-            printf("Handling message ...\n");
+        case BPFHV_PROXY_REQ_TX_ENABLE: {
+            int is_rx = msg.hdr.reqtype == BPFHV_PROXY_REQ_RX_ENABLE;
+
+            /* Check that backend is ready for packet processing. */
+            if (!backend_ready(be)) {
+                resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
+                fprintf(stderr, "Cannot enable %s operation: backend is "
+                        "not ready\n", is_rx ? "receive" : "transmit");
+                break;
+            }
+
+            /* Update be->status. */
+            if (is_rx) {
+                be->status |= BPFHV_STATUS_RX_ENABLED;
+            } else {
+                be->status |= BPFHV_STATUS_TX_ENABLED;
+            }
+
+            if (be->running) {
+                break;  /* Nothing to do */
+            }
+
+            be->running = 1;
+            printf("Backend starts processing\n");
             break;
+        }
+
+        case BPFHV_PROXY_REQ_RX_DISABLE:
+        case BPFHV_PROXY_REQ_TX_DISABLE: {
+            int is_rx = msg.hdr.reqtype == BPFHV_PROXY_REQ_RX_DISABLE;
+
+            /* Update be->status. */
+            if (is_rx) {
+                be->status &= ~BPFHV_STATUS_RX_ENABLED;
+            } else {
+                be->status &= ~BPFHV_STATUS_TX_ENABLED;
+            }
+
+            if (!be->running || ((be->status & (BPFHV_STATUS_RX_ENABLED |
+                                BPFHV_STATUS_TX_ENABLED)) != 0)) {
+                break;  /* Nothing to do. */
+            }
+            be->running = 0;
+            printf("Backend stops processing\n");
+            break;
+        }
 
         default:
             /* Not reached (see switch statement above). */
