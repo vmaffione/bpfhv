@@ -141,9 +141,17 @@ static int
 main_loop(BpfhvBackend *be)
 {
     int ret = -1;
+    int i;
 
     be->features_avail = BPFHV_F_SG;
     be->features_sel = 0;
+
+    for (i = 0; i < BPFHV_MAX_QUEUES; i++) {
+        be->rxqs[i].ctx = NULL;
+        be->txqs[i].ctx = NULL;
+        be->rxqs[i].kickfd = be->rxqs[i].irqfd = -1;
+        be->txqs[i].kickfd = be->txqs[i].irqfd = -1;
+    }
 
     for (;;) {
         ssize_t payload_size = 0;
@@ -444,8 +452,54 @@ main_loop(BpfhvBackend *be)
             } else {
                 be->txqs[queue_idx].ctx = (struct bpfhv_tx_context *)ctx;
             }
-            printf("Queue %s%u, gpa %"PRIx64", va %p\n",
+            printf("Set queue %s%u gpa to %"PRIx64", va %p\n",
                    is_rx ? "RX" : "TX", queue_idx, gpa, ctx);
+
+            break;
+        }
+
+        case BPFHV_PROXY_REQ_SET_QUEUE_KICK:
+        case BPFHV_PROXY_REQ_SET_QUEUE_IRQ: {
+            int is_kick = msg.hdr.reqtype == BPFHV_PROXY_REQ_SET_QUEUE_KICK;
+            uint32_t queue_idx = msg.payload.notify.queue_idx;
+            int is_rx = queue_idx < be->num_queues;
+            int *fdp = NULL;
+
+            if (!is_rx) {
+                if (queue_idx < 2 * be->num_queues) {
+                    queue_idx -= be->num_queues;
+                } else {
+                    resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
+                    fprintf(stderr, "Invalid queue idx %u\n", queue_idx);
+                    break;
+                }
+            }
+
+            if (num_fds != 1) {
+                resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
+                fprintf(stderr, "Missing %sfd\n", is_kick ? "kick" : "irq");
+                break;
+            }
+
+            if (is_rx) {
+                fdp = is_kick ? &be->rxqs[queue_idx].kickfd :
+                                &be->rxqs[queue_idx].irqfd;
+            } else {
+                fdp = is_kick ? &be->txqs[queue_idx].kickfd :
+                                &be->txqs[queue_idx].irqfd;
+            }
+
+            /* Clean up previous file descriptor and install the new one. */
+            if (*fdp >= 0) {
+                close(*fdp);
+            }
+            *fdp = fds[0];
+
+            /* Steal it from the fds array to skip close(). */
+            fds[0] = -1;
+
+            printf("Set queue %s%u %sfd to %d\n", is_rx ? "RX" : "TX",
+                   queue_idx, is_kick ? "kick" : "irq", *fdp);
 
             break;
         }
@@ -454,8 +508,6 @@ main_loop(BpfhvBackend *be)
         case BPFHV_PROXY_REQ_TX_ENABLE:
         case BPFHV_PROXY_REQ_RX_DISABLE:
         case BPFHV_PROXY_REQ_TX_DISABLE:
-        case BPFHV_PROXY_REQ_SET_QUEUE_KICK:
-        case BPFHV_PROXY_REQ_SET_QUEUE_IRQ:
             printf("Handling message ...\n");
             break;
 
@@ -512,10 +564,14 @@ main_loop(BpfhvBackend *be)
             size_t i;
 
             for (i = 0; i < num_fds; i++) {
-                close(fds[i]);
+                if (fds[i] >= 0) {
+                    close(fds[i]);
+                }
             }
             for (i = 0; i < num_outfds; i++) {
-                close(outfds[i]);
+                if (outfds[i] >= 0) {
+                    close(outfds[i]);
+                }
             }
         }
     }
