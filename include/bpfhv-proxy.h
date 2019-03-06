@@ -8,8 +8,6 @@ extern "C" {
 #endif
 
 #define BPFHV_PROXY_MAX_REGIONS     8
-#define BPFHV_PROXY_DIRECTION_RX    1
-#define BPFHV_PROXY_DIRECTION_TX    2
 
 typedef struct BpfhvProxyMemoryRegion {
     uint64_t        guest_physical_addr;
@@ -36,20 +34,15 @@ typedef struct BpfhvProxyCtxSizes {
     uint32_t        tx_ctx_size;
 } BpfhvProxyCtxSizes;
 
-typedef enum BpfhvProxyDirection {
-    BPFHV_PROXY_DIR_RX = 1,
-    BPFHV_PROXY_DIR_TX,
-} BpfhvProxyDirection;
-
 typedef struct BpfhvProxyQueueCtx {
+    /* Queues [0..N-1] are for receive. Queues [N..2N-1] are for transmit. */
     uint32_t            queue_idx;
-    BpfhvProxyDirection direction;
     uint64_t            guest_physical_addr;
 } BpfhvProxyQueueCtx;
 
 typedef struct BpfhvProxyNotifier {
+    /* Queues [0..N-1] are for receive. Queues [N..2N-1] are for transmit. */
     uint32_t            queue_idx;
-    BpfhvProxyDirection direction;
 } BpfhvProxyNotifier;
 
 typedef enum BpfhvProxyReqType {

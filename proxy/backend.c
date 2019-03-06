@@ -24,6 +24,8 @@
 #define unlikely(x)         __builtin_expect((x), 0)
 #endif
 
+#define BPFHV_MAX_QUEUES        16
+
 typedef struct BpfhvBackendMemoryRegion {
     uint64_t    gpa_start;
     uint64_t    gpa_end;
@@ -33,6 +35,18 @@ typedef struct BpfhvBackendMemoryRegion {
     void        *mmap_addr;
     void        *va_start;
 } BpfhvBackendMemoryRegion;
+
+typedef struct BpfhvBackendRxq {
+    struct bpfhv_rx_context *ctx;
+    int kickfd;
+    int irqfd;
+} BpfhvBackendRxq;
+
+typedef struct BpfhvBackendTxq {
+    struct bpfhv_tx_context *ctx;
+    int kickfd;
+    int irqfd;
+} BpfhvBackendTxq;
 
 /* Main data structure supporting a single bpfhv vNIC. */
 typedef struct BpfhvBackend {
@@ -57,6 +71,10 @@ typedef struct BpfhvBackend {
     unsigned int num_queues;
     unsigned int num_rx_bufs;
     unsigned int num_tx_bufs;
+
+    /* RX and TX queues. */
+    BpfhvBackendRxq rxqs[BPFHV_MAX_QUEUES];
+    BpfhvBackendTxq txqs[BPFHV_MAX_QUEUES];
 } BpfhvBackend;
 
 /* Translate guest physical address into host virtual address.
@@ -398,17 +416,37 @@ main_loop(BpfhvBackend *be)
 
         case BPFHV_PROXY_REQ_SET_QUEUE_CTX: {
             uint64_t gpa = msg.payload.queue_ctx.guest_physical_addr;
-            BpfhvProxyDirection dir = msg.payload.queue_ctx.direction;
-            void *queue_vaddr = translate_addr(be, gpa, /*TODO*/128);
+            uint32_t queue_idx = msg.payload.queue_ctx.queue_idx;
+            int is_rx = queue_idx < be->num_queues;
+            size_t ctx_size;
+            void *ctx;
 
-            if (gpa && queue_vaddr == NULL) {
+            if (is_rx) {
+                ctx_size = sring_rx_ctx_size(be->num_rx_bufs);
+            } else if (queue_idx < 2 * be->num_queues) {
+                queue_idx -= be->num_queues;
+                ctx_size = sring_tx_ctx_size(be->num_tx_bufs);
+            } else {
+                resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
+                fprintf(stderr, "Invalid queue idx %u\n", queue_idx);
+                break;
+            }
+
+            ctx = translate_addr(be, gpa, ctx_size);
+            if (gpa && ctx == NULL) {
                 resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
                 fprintf(stderr, "Failed to translate gpa %"PRIx64"\n", gpa);
                 break;
             }
+
+            if (is_rx) {
+                be->rxqs[queue_idx].ctx = (struct bpfhv_rx_context *)ctx;
+            } else {
+                be->txqs[queue_idx].ctx = (struct bpfhv_tx_context *)ctx;
+            }
             printf("Queue %s%u, gpa %"PRIx64", va %p\n",
-                   dir == BPFHV_PROXY_DIR_RX ? "RX" : "TX",
-                   msg.payload.queue_ctx.queue_idx, gpa, queue_vaddr);
+                   is_rx ? "RX" : "TX", queue_idx, gpa, ctx);
+
             break;
         }
 
