@@ -79,6 +79,9 @@ typedef struct BpfhvBackend {
      * waiting for more processing to come) ? */
     unsigned int running;
 
+    /* An event file descriptor to signal in case of upgrades. */
+    int upgrade_fd;
+
     /* RX and TX queues. */
     BpfhvBackendRxq rxqs[BPFHV_MAX_QUEUES];
     BpfhvBackendTxq txqs[BPFHV_MAX_QUEUES];
@@ -173,6 +176,7 @@ main_loop(BpfhvBackend *be)
     be->num_tx_bufs = 0;
     be->running = 0;
     be->status = 0;
+    be->upgrade_fd = -1;
 
     for (i = 0; i < BPFHV_MAX_QUEUES; i++) {
         be->rxqs[i].ctx = NULL;
@@ -297,6 +301,7 @@ main_loop(BpfhvBackend *be)
 
         case BPFHV_PROXY_REQ_SET_QUEUE_KICK:
         case BPFHV_PROXY_REQ_SET_QUEUE_IRQ:
+        case BPFHV_PROXY_REQ_SET_UPGRADE:
             payload_size = sizeof(msg.payload.notify);
             break;
 
@@ -529,6 +534,24 @@ main_loop(BpfhvBackend *be)
             printf("Set queue %s%u %sfd to %d\n", is_rx ? "RX" : "TX",
                    queue_idx, is_kick ? "kick" : "irq", *fdp);
 
+            break;
+        }
+
+        case BPFHV_PROXY_REQ_SET_UPGRADE: {
+            if (num_fds != 1) {
+                resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
+                fprintf(stderr, "Missing upgrade fd\n");
+                break;
+            }
+
+            /* Steal the file descriptor from the fds array to skip close(). */
+            if (be->upgrade_fd >= 0) {
+                close(be->upgrade_fd);
+            }
+            be->upgrade_fd = fds[0];
+            fds[0] = -1;
+
+            printf("Set upgrade notifier to %d\n", be->upgrade_fd);
             break;
         }
 

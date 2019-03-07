@@ -75,6 +75,7 @@ typedef enum BpfhvProxyReqType {
     BPFHV_PROXY_REQ_SET_QUEUE_CTX,
     BPFHV_PROXY_REQ_SET_QUEUE_KICK,
     BPFHV_PROXY_REQ_SET_QUEUE_IRQ,
+    BPFHV_PROXY_REQ_SET_UPGRADE,
     BPFHV_PROXY_REQ_RX_ENABLE,
     BPFHV_PROXY_REQ_TX_ENABLE,
     BPFHV_PROXY_REQ_RX_DISABLE,
@@ -113,6 +114,7 @@ typedef union BpfhvProxyMsgPayload {
     /* Associated messages:
      *   - BPFHV_PROXY_REQ_SET_QUEUE_KICK
      *   - BPFHV_PROXY_REQ_SET_QUEUE_IRQ
+     *   - BPFHV_PROXY_REQ_SET_UPGRADE
      */
 } BpfhvProxyMsgPayload;
 
