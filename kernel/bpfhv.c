@@ -457,6 +457,13 @@ bpfhv_remove(struct pci_dev *pdev)
 static void
 bpfhv_shutdown(struct pci_dev *pdev)
 {
+	struct net_device *netdev = pci_get_drvdata(pdev);
+	struct bpfhv_info *bi = netdev_priv(netdev);
+
+	/* Disable transmit and receive in the hardware. */
+	writel(BPFHV_CTRL_RX_DISABLE | BPFHV_CTRL_TX_DISABLE,
+	       bi->regaddr + BPFHV_REG_CTRL);
+
 	pci_disable_device(pdev);
 }
 
