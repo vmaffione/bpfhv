@@ -508,9 +508,9 @@ main_loop(BpfhvBackend *be)
                 }
             }
 
-            if (num_fds != 1) {
+            if (num_fds > 1) {
                 resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
-                fprintf(stderr, "Missing %sfd\n", is_kick ? "kick" : "irq");
+                fprintf(stderr, "Too many %sfds\n", is_kick ? "kick" : "irq");
                 break;
             }
 
@@ -526,7 +526,7 @@ main_loop(BpfhvBackend *be)
             if (*fdp >= 0) {
                 close(*fdp);
             }
-            *fdp = fds[0];
+            *fdp = (num_fds == 1) ? fds[0] : -1;
 
             /* Steal it from the fds array to skip close(). */
             fds[0] = -1;
