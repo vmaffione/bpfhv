@@ -71,7 +71,7 @@ typedef struct BpfhvBackend {
     size_t num_regions;
 
     /* Queue parameters. */
-    unsigned int num_queues;
+    unsigned int num_queue_pairs;
     unsigned int num_rx_bufs;
     unsigned int num_tx_bufs;
 
@@ -148,24 +148,48 @@ static void *
 process_packets(void *opaque)
 {
     BpfhvBackend *be = opaque;
-    struct pollfd pfd[1];
+    struct pollfd *pfd;
+    unsigned int nfds;
+    unsigned int i;
 
     printf("Thread started\n");
 
-    pfd[0].fd = be->stopfd;
-    pfd[0].events = POLLIN;
+    nfds = 1 + be->num_queue_pairs * 2;
+    pfd = calloc(nfds, sizeof(pfd[0]));
+    assert(pfd != NULL);
+
+    for (i = 0; i < be->num_queue_pairs; i++) {
+        pfd[i].fd = be->rxqs[i].kickfd;
+        pfd[i].events = POLLIN;
+        pfd[2*i].fd = be->txqs[i].kickfd;
+        pfd[2*i].events = POLLIN;
+    }
+    pfd[nfds-1].fd = be->stopfd;
+    pfd[nfds-1].events = POLLIN;
 
     for (;;) {
         int n;
 
-        n = poll(pfd, 1, -1);
+        n = poll(pfd, nfds, -1);
         if (unlikely(n <= 0)) {
             assert(n < 0);
             fprintf(stderr, "poll() failed: %s\n", strerror(errno));
             break;
         }
 
-        if (pfd[0].revents & POLLIN) {
+        for (i = 0; i < be->num_queue_pairs; i++) {
+            if (pfd[i].revents & POLLIN) {
+                printf("Kick on RX%u\n", i);
+            }
+        }
+
+        for (; i < 2 * be->num_queue_pairs; i++) {
+            if (pfd[i].revents & POLLIN) {
+                printf("Kick on TX%u\n", i);
+            }
+        }
+
+        if (unlikely(pfd[nfds-1].revents & POLLIN)) {
             uint64_t x;
 
             n = read(be->stopfd, &x, sizeof(x));
@@ -177,6 +201,8 @@ process_packets(void *opaque)
             break;
         }
     }
+
+    free(pfd);
 
     return NULL;
 }
@@ -198,13 +224,13 @@ backend_ready(BpfhvBackend *be)
 {
     int i;
 
-    for (i = 0; i < be->num_queues; i++) {
+    for (i = 0; i < be->num_queue_pairs; i++) {
         if (be->rxqs[i].ctx == NULL || be->txqs[i].ctx == NULL) {
             return 0;
         }
     }
 
-    return be->num_queues > 0 && num_bufs_valid(be->num_rx_bufs) &&
+    return be->num_queue_pairs > 0 && num_bufs_valid(be->num_rx_bufs) &&
            num_bufs_valid(be->num_tx_bufs) && be->num_regions > 0;
 }
 
@@ -217,7 +243,7 @@ main_loop(BpfhvBackend *be)
 
     be->features_avail = BPFHV_F_SG;
     be->features_sel = 0;
-    be->num_queues = 0;
+    be->num_queue_pairs = 0;
     be->num_rx_bufs = 0;
     be->num_tx_bufs = 0;
     be->running = 0;
@@ -408,11 +434,11 @@ main_loop(BpfhvBackend *be)
                        !num_bufs_valid(params->num_tx_bufs)) {
                 resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
             } else {
-                be->num_queues = (unsigned int)params->num_rx_queues;
+                be->num_queue_pairs = (unsigned int)params->num_rx_queues;
                 be->num_rx_bufs = (unsigned int)params->num_rx_bufs;
                 be->num_tx_bufs = (unsigned int)params->num_tx_bufs;
                 printf("Set queue parameters: %u queues, %u rx bufs, "
-                       "%u tx bufs\n", be->num_queues,
+                       "%u tx bufs\n", be->num_queue_pairs,
                         be->num_rx_bufs, be->num_tx_bufs);
 
                 resp.hdr.size = sizeof(resp.payload.ctx_sizes);
@@ -510,14 +536,14 @@ main_loop(BpfhvBackend *be)
         case BPFHV_PROXY_REQ_SET_QUEUE_CTX: {
             uint64_t gpa = msg.payload.queue_ctx.guest_physical_addr;
             uint32_t queue_idx = msg.payload.queue_ctx.queue_idx;
-            int is_rx = queue_idx < be->num_queues;
+            int is_rx = queue_idx < be->num_queue_pairs;
             size_t ctx_size;
             void *ctx;
 
             if (is_rx) {
                 ctx_size = sring_rx_ctx_size(be->num_rx_bufs);
-            } else if (queue_idx < 2 * be->num_queues) {
-                queue_idx -= be->num_queues;
+            } else if (queue_idx < 2 * be->num_queue_pairs) {
+                queue_idx -= be->num_queue_pairs;
                 ctx_size = sring_tx_ctx_size(be->num_tx_bufs);
             } else {
                 resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
@@ -547,12 +573,12 @@ main_loop(BpfhvBackend *be)
         case BPFHV_PROXY_REQ_SET_QUEUE_IRQ: {
             int is_kick = msg.hdr.reqtype == BPFHV_PROXY_REQ_SET_QUEUE_KICK;
             uint32_t queue_idx = msg.payload.notify.queue_idx;
-            int is_rx = queue_idx < be->num_queues;
+            int is_rx = queue_idx < be->num_queue_pairs;
             int *fdp = NULL;
 
             if (!is_rx) {
-                if (queue_idx < 2 * be->num_queues) {
-                    queue_idx -= be->num_queues;
+                if (queue_idx < 2 * be->num_queue_pairs) {
+                    queue_idx -= be->num_queue_pairs;
                 } else {
                     resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
                     fprintf(stderr, "Invalid queue idx %u\n", queue_idx);
