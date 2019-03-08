@@ -12,6 +12,9 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <sys/eventfd.h>
+#include <stdlib.h>
 
 #include "bpfhv-proxy.h"
 #include "bpfhv.h"
@@ -82,6 +85,12 @@ typedef struct BpfhvBackend {
     /* An event file descriptor to signal in case of upgrades. */
     int upgrade_fd;
 
+    /* Thread dedicated to packet processing. */
+    pthread_t th;
+
+    /* An eventfd useful to stop the processing thread. */
+    int stopfd;
+
     /* RX and TX queues. */
     BpfhvBackendRxq rxqs[BPFHV_MAX_QUEUES];
     BpfhvBackendTxq txqs[BPFHV_MAX_QUEUES];
@@ -135,6 +144,43 @@ sring_tx_ctx_size(size_t num_tx_bufs)
 	num_tx_bufs * sizeof(struct sring_tx_desc);
 }
 
+static void *
+process_packets(void *opaque)
+{
+    BpfhvBackend *be = opaque;
+    struct pollfd pfd[1];
+
+    printf("Thread started\n");
+
+    pfd[0].fd = be->stopfd;
+    pfd[0].events = POLLIN;
+
+    for (;;) {
+        int n;
+
+        n = poll(pfd, 1, -1);
+        if (unlikely(n <= 0)) {
+            assert(n < 0);
+            fprintf(stderr, "poll() failed: %s\n", strerror(errno));
+            break;
+        }
+
+        if (pfd[0].revents & POLLIN) {
+            uint64_t x;
+
+            n = read(be->stopfd, &x, sizeof(x));
+            if (n != sizeof(x)) {
+                assert(n < 0);
+                fprintf(stderr, "read() failed: %s\n", strerror(errno));
+            }
+            printf("Thread stopped\n");
+            break;
+        }
+    }
+
+    return NULL;
+}
+
 /* Helper function to validate the number of buffers. */
 static int
 num_bufs_valid(uint64_t num_bufs)
@@ -183,6 +229,12 @@ main_loop(BpfhvBackend *be)
         be->txqs[i].ctx = NULL;
         be->rxqs[i].kickfd = be->rxqs[i].irqfd = -1;
         be->txqs[i].kickfd = be->txqs[i].irqfd = -1;
+    }
+
+    be->stopfd = eventfd(0, 0);
+    if (be->stopfd < 0) {
+        fprintf(stderr, "eventfd() failed: %s\n", strerror(errno));
+        return -1;
     }
 
     for (;;) {
@@ -558,6 +610,7 @@ main_loop(BpfhvBackend *be)
         case BPFHV_PROXY_REQ_RX_ENABLE:
         case BPFHV_PROXY_REQ_TX_ENABLE: {
             int is_rx = msg.hdr.reqtype == BPFHV_PROXY_REQ_RX_ENABLE;
+            int ret;
 
             /* Check that backend is ready for packet processing. */
             if (!backend_ready(be)) {
@@ -578,6 +631,12 @@ main_loop(BpfhvBackend *be)
                 break;  /* Nothing to do */
             }
 
+            ret = pthread_create(&be->th, NULL, process_packets, be);
+            if (ret) {
+                fprintf(stderr, "pthread_create() failed: %s\n",
+                        strerror(ret));
+                break;
+            }
             be->running = 1;
             printf("Backend starts processing\n");
             break;
@@ -586,6 +645,7 @@ main_loop(BpfhvBackend *be)
         case BPFHV_PROXY_REQ_RX_DISABLE:
         case BPFHV_PROXY_REQ_TX_DISABLE: {
             int is_rx = msg.hdr.reqtype == BPFHV_PROXY_REQ_RX_DISABLE;
+            int ret;
 
             /* Update be->status. */
             if (is_rx) {
@@ -597,6 +657,25 @@ main_loop(BpfhvBackend *be)
             if (!be->running || ((be->status & (BPFHV_STATUS_RX_ENABLED |
                                 BPFHV_STATUS_TX_ENABLED)) != 0)) {
                 break;  /* Nothing to do. */
+            }
+
+            /* Notify the worker thread and join it. */
+            {
+                uint64_t x = 1;
+                int n;
+
+                n = write(be->stopfd, &x, sizeof(x));
+                if (n != sizeof(x)) {
+                    assert(n < 0);
+                    fprintf(stderr, "write() failed: %s\n", strerror(errno));
+                    exit(EXIT_FAILURE);
+                }
+            }
+            ret = pthread_join(be->th, NULL);
+            if (ret) {
+                fprintf(stderr, "pthread_join() failed: %s\n",
+                        strerror(ret));
+                break;
             }
             be->running = 0;
             printf("Backend stops processing\n");
@@ -667,6 +746,8 @@ main_loop(BpfhvBackend *be)
             }
         }
     }
+
+    close(be->stopfd);
 
     return ret;
 }
