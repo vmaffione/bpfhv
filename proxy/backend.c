@@ -237,6 +237,14 @@ backend_ready(BpfhvBackend *be)
         if (be->rxqs[i].ctx == NULL || be->txqs[i].ctx == NULL) {
             return 0;
         }
+
+        if (be->txqs[i].kickfd < 0 || be->rxqs[i].kickfd < 0) {
+            return 0;
+        }
+
+        if (be->txqs[i].irqfd < 0 || be->rxqs[i].irqfd < 0) {
+            return 0;
+        }
     }
 
     return be->num_queue_pairs > 0 && num_bufs_valid(be->num_rx_bufs) &&
