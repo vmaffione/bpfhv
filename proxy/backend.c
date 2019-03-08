@@ -144,6 +144,19 @@ sring_tx_ctx_size(size_t num_tx_bufs)
 	num_tx_bufs * sizeof(struct sring_tx_desc);
 }
 
+static inline void
+eventfd_drain(int fd)
+{
+    uint64_t x = 123;
+    int n;
+
+    n = read(fd, &x, sizeof(x));
+    if (unlikely(n != sizeof(x))) {
+        assert(n < 0);
+        fprintf(stderr, "read() failed: %s\n", strerror(errno));
+    }
+}
+
 static void *
 process_packets(void *opaque)
 {
@@ -161,8 +174,8 @@ process_packets(void *opaque)
     for (i = 0; i < be->num_queue_pairs; i++) {
         pfd[i].fd = be->rxqs[i].kickfd;
         pfd[i].events = POLLIN;
-        pfd[2*i].fd = be->txqs[i].kickfd;
-        pfd[2*i].events = POLLIN;
+        pfd[be->num_queue_pairs + i].fd = be->txqs[i].kickfd;
+        pfd[be->num_queue_pairs + i].events = POLLIN;
     }
     pfd[nfds-1].fd = be->stopfd;
     pfd[nfds-1].events = POLLIN;
@@ -180,23 +193,19 @@ process_packets(void *opaque)
         for (i = 0; i < be->num_queue_pairs; i++) {
             if (pfd[i].revents & POLLIN) {
                 printf("Kick on RX%u\n", i);
+                eventfd_drain(pfd[i].fd);
             }
         }
 
         for (; i < 2 * be->num_queue_pairs; i++) {
             if (pfd[i].revents & POLLIN) {
-                printf("Kick on TX%u\n", i);
+                printf("Kick on TX%u\n", i-be->num_queue_pairs);
+                eventfd_drain(pfd[i].fd);
             }
         }
 
         if (unlikely(pfd[nfds-1].revents & POLLIN)) {
-            uint64_t x;
-
-            n = read(be->stopfd, &x, sizeof(x));
-            if (n != sizeof(x)) {
-                assert(n < 0);
-                fprintf(stderr, "read() failed: %s\n", strerror(errno));
-            }
+            eventfd_drain(pfd[nfds-1].fd);
             printf("Thread stopped\n");
             break;
         }
