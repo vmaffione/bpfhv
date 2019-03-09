@@ -39,17 +39,15 @@ typedef struct BpfhvBackendMemoryRegion {
     void        *va_start;
 } BpfhvBackendMemoryRegion;
 
-typedef struct BpfhvBackendRxq {
-    struct bpfhv_rx_context *ctx;
+typedef struct BpfhvBackendQueue {
+    union {
+        struct bpfhv_rx_context *rx;
+        struct bpfhv_tx_context *tx;
+    } ctx;
     int kickfd;
     int irqfd;
-} BpfhvBackendRxq;
-
-typedef struct BpfhvBackendTxq {
-    struct bpfhv_tx_context *ctx;
-    int kickfd;
-    int irqfd;
-} BpfhvBackendTxq;
+    char name[8];
+} BpfhvBackendQueue;
 
 /* Main data structure supporting a single bpfhv vNIC. */
 typedef struct BpfhvBackend {
@@ -75,6 +73,9 @@ typedef struct BpfhvBackend {
     unsigned int num_rx_bufs;
     unsigned int num_tx_bufs;
 
+    /* Total number of queues (twice as num_queue_pairs). */
+    unsigned int num_queues;
+
     /* Flags defined for BPFHV_REG_STATUS. */
     uint32_t status;
 
@@ -91,9 +92,8 @@ typedef struct BpfhvBackend {
     /* An eventfd useful to stop the processing thread. */
     int stopfd;
 
-    /* RX and TX queues. */
-    BpfhvBackendRxq rxqs[BPFHV_MAX_QUEUES];
-    BpfhvBackendTxq txqs[BPFHV_MAX_QUEUES];
+    /* RX and TX queues (in this order). */
+    BpfhvBackendQueue q[BPFHV_MAX_QUEUES];
 } BpfhvBackend;
 
 /* Translate guest physical address into host virtual address.
@@ -329,11 +329,9 @@ process_packets(void *opaque)
     pfd = calloc(nfds, sizeof(pfd[0]));
     assert(pfd != NULL);
 
-    for (i = 0; i < be->num_queue_pairs; i++) {
-        pfd[i].fd = be->rxqs[i].kickfd;
+    for (i = 0; i < be->num_queues; i++) {
+        pfd[i].fd = be->q[i].kickfd;
         pfd[i].events = POLLIN;
-        pfd[be->num_queue_pairs + i].fd = be->txqs[i].kickfd;
-        pfd[be->num_queue_pairs + i].events = POLLIN;
     }
     pfd[nfds-1].fd = be->stopfd;
     pfd[nfds-1].events = POLLIN;
@@ -357,12 +355,12 @@ process_packets(void *opaque)
 
         for (; i < 2 * be->num_queue_pairs; i++) {
             if (pfd[i].revents & POLLIN) {
-                BpfhvBackendTxq *txq = be->txqs + i-be->num_queue_pairs;
+                BpfhvBackendQueue *txq = be->q + i;
                 int notify;
 
                 printf("Kick on TX%u\n", i-be->num_queue_pairs);
-                sring_txq_drain(be, txq->ctx, 0, &notify);
-                sring_txq_dump(txq->ctx);
+                sring_txq_drain(be, txq->ctx.tx, 0, &notify);
+                sring_txq_dump(txq->ctx.tx);
                 eventfd_drain(pfd[i].fd);
             }
         }
@@ -396,16 +394,16 @@ backend_ready(BpfhvBackend *be)
 {
     int i;
 
-    for (i = 0; i < be->num_queue_pairs; i++) {
-        if (be->rxqs[i].ctx == NULL || be->txqs[i].ctx == NULL) {
+    for (i = 0; i < be->num_queues; i++) {
+        if (be->q[i].ctx.rx == NULL) {
             return 0;
         }
 
-        if (be->txqs[i].kickfd < 0 || be->rxqs[i].kickfd < 0) {
+        if (be->q[i].kickfd < 0) {
             return 0;
         }
 
-        if (be->txqs[i].irqfd < 0 || be->rxqs[i].irqfd < 0) {
+        if (be->q[i].irqfd < 0) {
             return 0;
         }
     }
@@ -423,7 +421,7 @@ main_loop(BpfhvBackend *be)
 
     be->features_avail = BPFHV_F_SG;
     be->features_sel = 0;
-    be->num_queue_pairs = 0;
+    be->num_queue_pairs = be->num_queues = 0;
     be->num_rx_bufs = 0;
     be->num_tx_bufs = 0;
     be->running = 0;
@@ -431,10 +429,8 @@ main_loop(BpfhvBackend *be)
     be->upgrade_fd = -1;
 
     for (i = 0; i < BPFHV_MAX_QUEUES; i++) {
-        be->rxqs[i].ctx = NULL;
-        be->txqs[i].ctx = NULL;
-        be->rxqs[i].kickfd = be->rxqs[i].irqfd = -1;
-        be->txqs[i].kickfd = be->txqs[i].irqfd = -1;
+        be->q[i].ctx.rx = NULL;
+        be->q[i].kickfd = be->q[i].irqfd = -1;
     }
 
     be->stopfd = eventfd(0, 0);
@@ -614,18 +610,31 @@ main_loop(BpfhvBackend *be)
                        !num_bufs_valid(params->num_tx_bufs)) {
                 resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
             } else {
+                unsigned int i;
+
                 be->num_queue_pairs = (unsigned int)params->num_rx_queues;
                 be->num_rx_bufs = (unsigned int)params->num_rx_bufs;
                 be->num_tx_bufs = (unsigned int)params->num_tx_bufs;
-                printf("Set queue parameters: %u queues, %u rx bufs, "
+                printf("Set queue parameters: %u queue pairs, %u rx bufs, "
                        "%u tx bufs\n", be->num_queue_pairs,
                         be->num_rx_bufs, be->num_tx_bufs);
+
+                be->num_queues = 2 * be->num_queue_pairs;
 
                 resp.hdr.size = sizeof(resp.payload.ctx_sizes);
                 resp.payload.ctx_sizes.rx_ctx_size =
                     sring_rx_ctx_size(be->num_rx_bufs);
                 resp.payload.ctx_sizes.tx_ctx_size =
                     sring_tx_ctx_size(be->num_tx_bufs);
+
+                for (i = 0; i < be->num_queue_pairs; i++) {
+                    snprintf(be->q[i].name, sizeof(be->q[i].name),
+                             "RX%u", i);
+                }
+                for (i = be->num_queue_pairs; i < be->num_queues; i++) {
+                    snprintf(be->q[i].name, sizeof(be->q[i].name),
+                             "TX%u", i-be->num_queue_pairs);
+                }
             }
             break;
         }
@@ -722,8 +731,7 @@ main_loop(BpfhvBackend *be)
 
             if (is_rx) {
                 ctx_size = sring_rx_ctx_size(be->num_rx_bufs);
-            } else if (queue_idx < 2 * be->num_queue_pairs) {
-                queue_idx -= be->num_queue_pairs;
+            } else if (queue_idx < be->num_queues) {
                 ctx_size = sring_tx_ctx_size(be->num_tx_bufs);
             } else {
                 resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
@@ -739,20 +747,20 @@ main_loop(BpfhvBackend *be)
             }
 
             if (is_rx) {
-                be->rxqs[queue_idx].ctx = (struct bpfhv_rx_context *)ctx;
+                be->q[queue_idx].ctx.rx = (struct bpfhv_rx_context *)ctx;
                 if (ctx) {
-                    sring_rx_ctx_init(be->rxqs[queue_idx].ctx,
+                    sring_rx_ctx_init(be->q[queue_idx].ctx.rx,
                                       be->num_rx_bufs);
                 }
             } else {
-                be->txqs[queue_idx].ctx = (struct bpfhv_tx_context *)ctx;
+                be->q[queue_idx].ctx.tx = (struct bpfhv_tx_context *)ctx;
                 if (ctx) {
-                    sring_tx_ctx_init(be->txqs[queue_idx].ctx,
+                    sring_tx_ctx_init(be->q[queue_idx].ctx.tx,
                                       be->num_tx_bufs);
                 }
             }
-            printf("Set queue %s%u gpa to %"PRIx64", va %p\n",
-                   is_rx ? "RX" : "TX", queue_idx, gpa, ctx);
+            printf("Set queue %s gpa to %"PRIx64", va %p\n",
+                   be->q[queue_idx].name, gpa, ctx);
 
             break;
         }
@@ -766,7 +774,6 @@ main_loop(BpfhvBackend *be)
 
             if (!is_rx) {
                 if (queue_idx < 2 * be->num_queue_pairs) {
-                    queue_idx -= be->num_queue_pairs;
                 } else {
                     resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
                     fprintf(stderr, "Invalid queue idx %u\n", queue_idx);
@@ -780,13 +787,7 @@ main_loop(BpfhvBackend *be)
                 break;
             }
 
-            if (is_rx) {
-                fdp = is_kick ? &be->rxqs[queue_idx].kickfd :
-                                &be->rxqs[queue_idx].irqfd;
-            } else {
-                fdp = is_kick ? &be->txqs[queue_idx].kickfd :
-                                &be->txqs[queue_idx].irqfd;
-            }
+            fdp = is_kick ? &be->q[queue_idx].kickfd : &be->q[queue_idx].irqfd;
 
             /* Clean up previous file descriptor and install the new one. */
             if (*fdp >= 0) {
@@ -797,8 +798,8 @@ main_loop(BpfhvBackend *be)
             /* Steal it from the fds array to skip close(). */
             fds[0] = -1;
 
-            printf("Set queue %s%u %sfd to %d\n", is_rx ? "RX" : "TX",
-                   queue_idx, is_kick ? "kick" : "irq", *fdp);
+            printf("Set queue %s %sfd to %d\n", be->q[queue_idx].name,
+                   is_kick ? "kick" : "irq", *fdp);
 
             break;
         }
