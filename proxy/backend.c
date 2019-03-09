@@ -132,6 +132,7 @@ translate_addr(BpfhvBackend *be, uint64_t gpa, uint64_t len)
 
 #define ACCESS_ONCE(x) (*(volatile typeof(x) *)&(x))
 #define compiler_barrier() __asm__ __volatile__ ("");
+#define smp_mb() compiler_barrier()
 
 static size_t
 sring_rx_ctx_size(size_t num_rx_bufs)
@@ -169,6 +170,137 @@ sring_tx_ctx_init(struct bpfhv_tx_context *ctx, size_t num_tx_bufs)
     priv->prod = priv->cons = priv->clear = 0;
     priv->kick_enabled = priv->intr_enabled = 1;
     memset(priv->desc, 0, num_tx_bufs * sizeof(priv->desc[0]));
+}
+
+struct virtio_net_hdr_v1 {
+#define VIRTIO_NET_HDR_F_NEEDS_CSUM     1       /* Use csum_start, csum_offset */
+#define VIRTIO_NET_HDR_F_DATA_VALID     2       /* Csum is valid */
+    uint8_t flags;
+#define VIRTIO_NET_HDR_GSO_NONE         0       /* Not a GSO frame */
+#define VIRTIO_NET_HDR_GSO_TCPV4        1       /* GSO frame, IPv4 TCP (TSO) */
+#define VIRTIO_NET_HDR_GSO_UDP          3       /* GSO frame, IPv4 UDP (UFO) */
+#define VIRTIO_NET_HDR_GSO_TCPV6        4       /* GSO frame, IPv6 TCP */
+#define VIRTIO_NET_HDR_GSO_ECN          0x80    /* TCP has ECN set */
+    uint8_t gso_type;
+    uint16_t hdr_len;     /* Ethernet + IP + tcp/udp hdrs */
+    uint16_t gso_size;    /* Bytes to append to hdr_len per frame */
+    uint16_t csum_start;  /* Position to start checksumming from */
+    uint16_t csum_offset; /* Offset after that to place checksum */
+    uint16_t num_buffers; /* Number of merged rx buffers */
+};
+
+#define BPFHV_HV_TX_BUDGET      64
+
+static size_t
+iov_size(struct iovec *iov, size_t iovcnt)
+{
+    size_t len = 0;
+    size_t i;
+
+    for (i = 0; i < iovcnt; i++) {
+        len += iov[i].iov_len;
+    }
+
+    return len;
+}
+
+static ssize_t
+sring_txq_drain(BpfhvBackend *be,
+                struct bpfhv_tx_context *ctx,
+                int vnet_hdr_len, int *notify)
+{
+    struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
+    struct iovec iov[BPFHV_MAX_TX_BUFS];
+    uint32_t prod = ACCESS_ONCE(priv->prod);
+    uint32_t cons = priv->cons;
+    uint32_t first = cons;
+    int iovcnt_start = vnet_hdr_len != 0 ? 1 : 0;
+    int iovcnt = iovcnt_start;
+    int count = 0;
+
+    while (cons != prod) {
+        struct sring_tx_desc *txd = priv->desc + (cons & priv->qmask);
+
+        cons++;
+
+        iov[iovcnt].iov_base = translate_addr(be, txd->paddr, txd->len);
+        iov[iovcnt].iov_len = txd->len;
+        if (unlikely(iov[iovcnt].iov_base == NULL)) {
+            /* Invalid descriptor, just skip it. */
+        } else {
+            iovcnt++;
+        }
+
+        if (txd->flags & SRING_DESC_F_EOP) {
+            struct virtio_net_hdr_v1 hdr;
+            int ret;
+
+            if (vnet_hdr_len != 0) {
+                hdr.flags = (txd->flags & SRING_DESC_F_NEEDS_CSUM) ?
+                    VIRTIO_NET_HDR_F_NEEDS_CSUM : 0;
+                hdr.csum_start = txd->csum_start;
+                hdr.csum_offset = txd->csum_offset;
+                hdr.hdr_len = txd->hdr_len;
+                hdr.gso_size = txd->gso_size;
+                hdr.gso_type = txd->gso_type;
+                hdr.num_buffers = 0;
+#if 0
+                printf("tx hdr: {fl %x, cs %u, co %u, hl %u, gs %u, gt %u}\n",
+                        hdr.flags, hdr.csum_start, hdr.csum_offset,
+                        hdr.hdr_len, hdr.gso_size, hdr.gso_type);
+#endif
+                iov[0].iov_base = &hdr;
+                iov[0].iov_len = sizeof(hdr);
+            }
+
+            ret = 1; /* TODO output packet, return bytes sent */
+            printf("Fake transmit iovcnt %u size %zu\n", iovcnt,
+                   iov_size(iov, iovcnt));
+
+            if (ret == 0) {
+                /* Backend is blocked, we need to stop. The last packet was not
+                 * transmitted, so we need to rewind 'cons'. */
+                cons = first;
+                break;
+            }
+
+            if (++count >= BPFHV_HV_TX_BUDGET) {
+                break;
+            }
+
+            iovcnt = iovcnt_start;
+            first = cons;
+        }
+    }
+
+    smp_mb();
+    priv->cons = cons;
+    smp_mb();
+    *notify = ACCESS_ONCE(priv->intr_enabled);
+
+    return count;
+}
+
+void
+sring_txq_notification(struct bpfhv_tx_context *ctx, int enable)
+{
+    struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
+
+    priv->kick_enabled = !!enable;
+    if (enable) {
+        smp_mb();
+    }
+}
+
+static void
+sring_txq_dump(struct bpfhv_tx_context *ctx)
+{
+    struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
+
+    printf("sring.txq cl %u co %u pr %u kick %u intr %u\n",
+           ACCESS_ONCE(priv->clear), ACCESS_ONCE(priv->cons),
+           ACCESS_ONCE(priv->prod), ACCESS_ONCE(priv->kick_enabled),
+           ACCESS_ONCE(priv->intr_enabled));
 }
 
 static inline void
@@ -226,7 +358,12 @@ process_packets(void *opaque)
 
         for (; i < 2 * be->num_queue_pairs; i++) {
             if (pfd[i].revents & POLLIN) {
+                BpfhvBackendTxq *txq = be->txqs + i-be->num_queue_pairs;
+                int notify;
+
                 printf("Kick on TX%u\n", i-be->num_queue_pairs);
+                sring_txq_drain(be, txq->ctx, 0, &notify);
+                sring_txq_dump(txq->ctx);
                 eventfd_drain(pfd[i].fd);
             }
         }
