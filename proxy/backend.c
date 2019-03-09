@@ -132,7 +132,6 @@ translate_addr(BpfhvBackend *be, uint64_t gpa, uint64_t len)
 
 #define ACCESS_ONCE(x) (*(volatile typeof(x) *)&(x))
 #define compiler_barrier() __asm__ __volatile__ ("");
-#define smp_mb() compiler_barrier()
 
 static size_t
 sring_rx_ctx_size(size_t num_rx_bufs)
@@ -273,9 +272,9 @@ sring_txq_drain(BpfhvBackend *be,
         }
     }
 
-    smp_mb();
+    __atomic_thread_fence(__ATOMIC_RELEASE);
     priv->cons = cons;
-    smp_mb();
+    __atomic_thread_fence(__ATOMIC_RELEASE);
     *notify = ACCESS_ONCE(priv->intr_enabled);
 
     return count;
@@ -288,7 +287,7 @@ sring_txq_notification(struct bpfhv_tx_context *ctx, int enable)
 
     priv->kick_enabled = !!enable;
     if (enable) {
-        smp_mb();
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
     }
 }
 
