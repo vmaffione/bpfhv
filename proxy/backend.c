@@ -315,6 +315,19 @@ eventfd_drain(int fd)
     }
 }
 
+static inline void
+eventfd_signal(int fd)
+{
+    uint64_t x = 1;
+    int n;
+
+    n = write(fd, &x, sizeof(x));
+    if (unlikely(n != sizeof(x))) {
+        assert(n < 0);
+        fprintf(stderr, "read() failed: %s\n", strerror(errno));
+    }
+}
+
 static void *
 process_packets(void *opaque)
 {
@@ -348,7 +361,9 @@ process_packets(void *opaque)
 
         for (i = 0; i < be->num_queue_pairs; i++) {
             if (pfd[i].revents & POLLIN) {
-                printf("Kick on RX%u\n", i);
+                BpfhvBackendQueue *rxq = be->q + i;
+
+                printf("Kick on %s\n", rxq->name);
                 eventfd_drain(pfd[i].fd);
             }
         }
@@ -356,10 +371,14 @@ process_packets(void *opaque)
         for (; i < be->num_queues; i++) {
             if (pfd[i].revents & POLLIN) {
                 BpfhvBackendQueue *txq = be->q + i;
-                int notify;
+                int notify = 0;
 
-                printf("Kick on TX%u\n", i-be->num_queue_pairs);
+                printf("Kick on %s\n", txq->name);
                 sring_txq_drain(be, txq->ctx.tx, 0, &notify);
+                if (notify) {
+                    eventfd_signal(txq->irqfd);
+                    printf("Interrupt on %s\n", txq->name);
+                }
                 sring_txq_dump(txq->ctx.tx);
                 eventfd_drain(pfd[i].fd);
             }
