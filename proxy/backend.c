@@ -130,6 +130,9 @@ translate_addr(BpfhvBackend *be, uint64_t gpa, uint64_t len)
  * The sring implementation.
  */
 
+#define ACCESS_ONCE(x) (*(volatile typeof(x) *)&(x))
+#define compiler_barrier() __asm__ __volatile__ ("");
+
 static size_t
 sring_rx_ctx_size(size_t num_rx_bufs)
 {
@@ -142,6 +145,30 @@ sring_tx_ctx_size(size_t num_tx_bufs)
 {
     return sizeof(struct bpfhv_tx_context) + sizeof(struct sring_tx_context) +
 	num_tx_bufs * sizeof(struct sring_tx_desc);
+}
+
+void
+sring_rx_ctx_init(struct bpfhv_rx_context *ctx, size_t num_rx_bufs)
+{
+    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
+
+    assert((num_rx_bufs & (num_rx_bufs - 1)) == 0);
+    priv->qmask = num_rx_bufs - 1;
+    priv->prod = priv->cons = priv->clear = 0;
+    priv->kick_enabled = priv->intr_enabled = 1;
+    memset(priv->desc, 0, num_rx_bufs * sizeof(priv->desc[0]));
+}
+
+void
+sring_tx_ctx_init(struct bpfhv_tx_context *ctx, size_t num_tx_bufs)
+{
+    struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
+
+    assert((num_tx_bufs & (num_tx_bufs - 1)) == 0);
+    priv->qmask = num_tx_bufs - 1;
+    priv->prod = priv->cons = priv->clear = 0;
+    priv->kick_enabled = priv->intr_enabled = 1;
+    memset(priv->desc, 0, num_tx_bufs * sizeof(priv->desc[0]));
 }
 
 static inline void
@@ -577,8 +604,16 @@ main_loop(BpfhvBackend *be)
 
             if (is_rx) {
                 be->rxqs[queue_idx].ctx = (struct bpfhv_rx_context *)ctx;
+                if (ctx) {
+                    sring_rx_ctx_init(be->rxqs[queue_idx].ctx,
+                                      be->num_rx_bufs);
+                }
             } else {
                 be->txqs[queue_idx].ctx = (struct bpfhv_tx_context *)ctx;
+                if (ctx) {
+                    sring_tx_ctx_init(be->txqs[queue_idx].ctx,
+                                      be->num_tx_bufs);
+                }
             }
             printf("Set queue %s%u gpa to %"PRIx64", va %p\n",
                    is_rx ? "RX" : "TX", queue_idx, gpa, ctx);
