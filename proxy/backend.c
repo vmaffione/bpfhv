@@ -325,7 +325,7 @@ process_packets(void *opaque)
 
     printf("Thread started\n");
 
-    nfds = 1 + be->num_queue_pairs * 2;
+    nfds = 1 + be->num_queues;
     pfd = calloc(nfds, sizeof(pfd[0]));
     assert(pfd != NULL);
 
@@ -353,7 +353,7 @@ process_packets(void *opaque)
             }
         }
 
-        for (; i < 2 * be->num_queue_pairs; i++) {
+        for (; i < be->num_queues; i++) {
             if (pfd[i].revents & POLLIN) {
                 BpfhvBackendQueue *txq = be->q + i;
                 int notify;
@@ -729,14 +729,16 @@ main_loop(BpfhvBackend *be)
             size_t ctx_size;
             void *ctx;
 
+            if (queue_idx >= be->num_queues) {
+                resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
+                fprintf(stderr, "Invalid queue idx %u\n", queue_idx);
+                break;
+            }
+
             if (is_rx) {
                 ctx_size = sring_rx_ctx_size(be->num_rx_bufs);
             } else if (queue_idx < be->num_queues) {
                 ctx_size = sring_tx_ctx_size(be->num_tx_bufs);
-            } else {
-                resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
-                fprintf(stderr, "Invalid queue idx %u\n", queue_idx);
-                break;
             }
 
             ctx = translate_addr(be, gpa, ctx_size);
@@ -769,16 +771,12 @@ main_loop(BpfhvBackend *be)
         case BPFHV_PROXY_REQ_SET_QUEUE_IRQ: {
             int is_kick = msg.hdr.reqtype == BPFHV_PROXY_REQ_SET_QUEUE_KICK;
             uint32_t queue_idx = msg.payload.notify.queue_idx;
-            int is_rx = queue_idx < be->num_queue_pairs;
             int *fdp = NULL;
 
-            if (!is_rx) {
-                if (queue_idx < 2 * be->num_queue_pairs) {
-                } else {
-                    resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
-                    fprintf(stderr, "Invalid queue idx %u\n", queue_idx);
-                    break;
-                }
+            if (queue_idx >= be->num_queues) {
+                resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
+                fprintf(stderr, "Invalid queue idx %u\n", queue_idx);
+                break;
             }
 
             if (num_fds > 1) {
