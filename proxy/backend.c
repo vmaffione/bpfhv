@@ -15,6 +15,10 @@
 #include <pthread.h>
 #include <sys/eventfd.h>
 #include <stdlib.h>
+#include <linux/if.h>
+#include <linux/if_tun.h>
+#include <sys/ioctl.h>
+#include <sys/uio.h>
 
 #include "bpfhv-proxy.h"
 #include "bpfhv.h"
@@ -51,6 +55,9 @@ typedef struct BpfhvBackendQueue {
 
 /* Main data structure supporting a single bpfhv vNIC. */
 typedef struct BpfhvBackend {
+    /* File descriptor of the TAP device (the real net backend). */
+    int tapfd;
+
     /* Socket file descriptor to exchange control message with the
      * hypervisor. */
     int cfd;
@@ -252,11 +259,13 @@ sring_txq_drain(BpfhvBackend *be,
                 iov[0].iov_len = sizeof(hdr);
             }
 
-            ret = 1; /* TODO output packet, return bytes sent */
-            printf("Fake transmit iovcnt %u size %zu\n", iovcnt,
-                   iov_size(iov, iovcnt));
-
-            if (ret == 0) {
+            ret = writev(be->tapfd, iov, iovcnt);
+            printf("Transmitted iovcnt %u size %zu --> %d\n", iovcnt,
+                   iov_size(iov, iovcnt), ret);
+            if (unlikely(ret <= 0)) {
+                if (ret < 0) {
+                    fprintf(stderr, "Transmit failure: %s\n", strerror(errno));
+                }
                 /* Backend is blocked, we need to stop. The last packet was not
                  * transmitted, so we need to rewind 'cons'. */
                 cons = first;
@@ -984,6 +993,37 @@ main_loop(BpfhvBackend *be)
     return ret;
 }
 
+static int
+tap_alloc(char *ifname)
+{
+    struct ifreq ifr;
+    int fd, err;
+
+    if (ifname == NULL) {
+        fprintf(stderr, "Missing tap ifname\n");
+        return -1;
+    }
+
+    /* Open the clone device. */
+    fd = open("/dev/net/tun", O_RDWR);
+    if (fd < 0) {
+        return fd;
+    }
+
+    memset(&ifr, 0, sizeof(ifr));
+    ifr.ifr_flags = IFF_TAP | IFF_NO_PI;  /* IFF_TAP, IFF_TUN, IFF_NO_PI */
+    strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
+
+    /* Try to create the device. */
+    err = ioctl(fd, TUNSETIFF, (void *)&ifr);
+    if(err < 0) {
+        close(fd);
+        return err;
+    }
+
+    return fd;
+}
+
 static void
 usage(const char *progname)
 {
@@ -1028,6 +1068,13 @@ main(int argc, char **argv)
         return -1;
     }
 
+    /* Open the TAP device to use as. */
+    be.tapfd = tap_alloc("tapx");
+    if (be.tapfd < 0) {
+        fprintf(stderr, "Failed to allocate TAP device\n");
+        return -1;
+    }
+
     cfd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (cfd < 0) {
         fprintf(stderr, "socket(AF_UNIX) failed: %s\n", strerror(errno));
@@ -1046,6 +1093,7 @@ main(int argc, char **argv)
     be.cfd = cfd;
     ret = main_loop(&be);
     close(cfd);
+    close(be.tapfd);
 
     return ret;
 }
