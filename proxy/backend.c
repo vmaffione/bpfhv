@@ -300,12 +300,42 @@ sring_txq_notification(struct bpfhv_tx_context *ctx, int enable)
     }
 }
 
-static void
+void
 sring_txq_dump(struct bpfhv_tx_context *ctx)
 {
     struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
 
     printf("sring.txq cl %u co %u pr %u kick %u intr %u\n",
+           ACCESS_ONCE(priv->clear), ACCESS_ONCE(priv->cons),
+           ACCESS_ONCE(priv->prod), ACCESS_ONCE(priv->kick_enabled),
+           ACCESS_ONCE(priv->intr_enabled));
+}
+
+static int
+sring_can_receive(struct bpfhv_rx_context *ctx)
+{
+    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
+
+    return (priv->cons != ACCESS_ONCE(priv->prod));
+}
+
+void
+sring_rxq_notification(struct bpfhv_rx_context *ctx, int enable)
+{
+    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
+
+    priv->kick_enabled = !!enable;
+    if (enable) {
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    }
+}
+
+void
+sring_rxq_dump(struct bpfhv_rx_context *ctx)
+{
+    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
+
+    printf("sring.rxq cl %u co %u pr %u kick %u intr %u\n",
            ACCESS_ONCE(priv->clear), ACCESS_ONCE(priv->cons),
            ACCESS_ONCE(priv->prod), ACCESS_ONCE(priv->kick_enabled),
            ACCESS_ONCE(priv->intr_enabled));
@@ -341,13 +371,14 @@ static void *
 process_packets(void *opaque)
 {
     BpfhvBackend *be = opaque;
+    int can_receive = 1;
     struct pollfd *pfd;
     unsigned int nfds;
     unsigned int i;
 
     printf("Thread started\n");
 
-    nfds = 1 + be->num_queues;
+    nfds = 2 + be->num_queues;
     pfd = calloc(nfds, sizeof(pfd[0]));
     assert(pfd != NULL);
 
@@ -355,11 +386,15 @@ process_packets(void *opaque)
         pfd[i].fd = be->q[i].kickfd;
         pfd[i].events = POLLIN;
     }
+    pfd[nfds-2].fd = be->tapfd;
+    pfd[nfds-2].events = 0;
     pfd[nfds-1].fd = be->stopfd;
     pfd[nfds-1].events = POLLIN;
 
     for (;;) {
         int n;
+
+        pfd[nfds-2].events = can_receive ? POLLIN : 0;
 
         n = poll(pfd, nfds, -1);
         if (unlikely(n <= 0)) {
@@ -368,13 +403,16 @@ process_packets(void *opaque)
             break;
         }
 
+        can_receive = 0;
         for (i = 0; i < be->num_queue_pairs; i++) {
+            BpfhvBackendQueue *rxq = be->q + i;
+
             if (pfd[i].revents & POLLIN) {
-                BpfhvBackendQueue *rxq = be->q + i;
 
                 printf("Kick on %s\n", rxq->name);
                 eventfd_drain(pfd[i].fd);
             }
+            can_receive |= sring_can_receive(rxq->ctx.rx);
         }
 
         for (; i < be->num_queues; i++) {
@@ -390,6 +428,18 @@ process_packets(void *opaque)
                 }
                 sring_txq_dump(txq->ctx.tx);
                 eventfd_drain(pfd[i].fd);
+            }
+        }
+
+        if (pfd[nfds-2].revents & POLLIN) {
+            for (;;) {
+                char buf[2048];
+                int ret = read(be->tapfd, buf, 2048);
+
+                if (ret < 0 && errno == EAGAIN) {
+                    break;
+                }
+                printf("Received %d bytes\n", ret);
             }
         }
 
@@ -464,6 +514,12 @@ main_loop(BpfhvBackend *be)
     be->stopfd = eventfd(0, 0);
     if (be->stopfd < 0) {
         fprintf(stderr, "eventfd() failed: %s\n", strerror(errno));
+        return -1;
+    }
+
+    ret = fcntl(be->tapfd, F_SETFL, O_NONBLOCK);
+    if (ret) {
+        fprintf(stderr, "fcntl(tapfd, F_SETFL) failed: %s\n", strerror(errno));
         return -1;
     }
 
