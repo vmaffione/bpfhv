@@ -252,6 +252,144 @@ struct virtio_net_hdr_v1 {
 
 #define BPFHV_HV_TX_BUDGET      64
 
+static void
+sring_rxq_notification(struct bpfhv_rx_context *ctx, int enable)
+{
+    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
+
+    priv->kick_enabled = !!enable;
+    if (enable) {
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    }
+}
+
+static void
+sring_txq_notification(struct bpfhv_tx_context *ctx, int enable)
+{
+    struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
+
+    priv->kick_enabled = !!enable;
+    if (enable) {
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    }
+}
+
+static void
+sring_rxq_dump(struct bpfhv_rx_context *ctx)
+{
+    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
+
+    printf("sring.rxq cl %u co %u pr %u kick %u intr %u\n",
+           ACCESS_ONCE(priv->clear), ACCESS_ONCE(priv->cons),
+           ACCESS_ONCE(priv->prod), ACCESS_ONCE(priv->kick_enabled),
+           ACCESS_ONCE(priv->intr_enabled));
+}
+
+static void
+sring_txq_dump(struct bpfhv_tx_context *ctx)
+{
+    struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
+
+    printf("sring.txq cl %u co %u pr %u kick %u intr %u\n",
+           ACCESS_ONCE(priv->clear), ACCESS_ONCE(priv->cons),
+           ACCESS_ONCE(priv->prod), ACCESS_ONCE(priv->kick_enabled),
+           ACCESS_ONCE(priv->intr_enabled));
+}
+
+static int
+sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
+               size_t max_pkt_size, int vnet_hdr_len,
+               int *can_receive, int *notify)
+{
+    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
+    uint32_t prod = ACCESS_ONCE(priv->prod);
+    uint32_t cons = priv->cons;
+    struct iovec iov[BPFHV_MAX_TX_BUFS];
+    int count;
+
+    *can_receive = 1;
+
+    for (count = 0;; count++) {
+        uint32_t cons_first = cons;
+        struct sring_rx_desc *rxd;
+        size_t totsize = 0;
+        int iovcnt = 0;
+        int ret;
+
+        /* Collect enough receive descriptors to make room for a maximum
+         * sized packet. */
+        do {
+            if (unlikely(cons == prod)) {
+                /* We ran out of RX descriptors. Enable RX kicks and double
+                 * check for more available descriptors. */
+                sring_rxq_notification(ctx, /*enable=*/1);
+                prod = ACCESS_ONCE(priv->prod);
+                if (cons == prod) {
+                    /* Not enough space. We need to rewind to the first unused
+                     * descriptor and stop. */
+                    cons = cons_first;
+                    *can_receive = 0;
+                    goto out;
+                }
+                sring_rxq_notification(ctx, /*enable=*/0);
+            }
+
+            rxd = priv->desc + (cons & priv->qmask);
+            iov[iovcnt].iov_base = translate_addr(be, rxd->paddr, rxd->len);
+            if (unlikely(iov[iovcnt].iov_base == NULL)) {
+                /* Invalid descriptor. */
+                rxd->len = 0;
+                rxd->flags = 0;
+                if (verbose) {
+                    fprintf(stderr, "Invalid RX descriptor: gpa%"PRIx64", "
+                                    "len %u\n", rxd->paddr, rxd->len);
+                }
+            } else {
+                iov[iovcnt].iov_len = rxd->len;
+                totsize += rxd->len;
+                iovcnt++;
+            }
+            cons++;
+        } while (totsize < max_pkt_size && iovcnt < BPFHV_MAX_TX_BUFS);
+
+        /* Read into the scatter-gather buffer referenced by the collected
+         * descriptors. */
+        ret = readv(be->tapfd, iov, iovcnt);
+        if (ret < 0 && errno == EAGAIN) {
+            /* No more data to read. We need to rewind to the first unused
+             * descriptor and stop. */
+            cons = cons_first;
+            break;
+        }
+#if 0
+        printf("Received %d bytes\n", ret);
+#endif
+
+        /* Write back to the receive descriptors effectively used. */
+        for (cons = cons_first; ret > 0; cons++) {
+            rxd = priv->desc + (cons & priv->qmask);
+
+            if (unlikely(rxd->len == 0)) {
+                /* This was an invalid descriptor. */
+                continue;
+            }
+
+            rxd->flags = 0;
+            rxd->len = (rxd->len <= ret) ? rxd->len : ret;
+            ret -= rxd->len;
+        }
+        rxd->flags |= SRING_DESC_F_EOP;
+    }
+
+out:
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    priv->cons = cons;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    *notify = ACCESS_ONCE(priv->intr_enabled);
+
+    return count;
+}
+
 static ssize_t
 sring_txq_drain(BpfhvBackend *be,
                 struct bpfhv_tx_context *ctx,
@@ -334,145 +472,6 @@ sring_txq_drain(BpfhvBackend *be,
     *notify = ACCESS_ONCE(priv->intr_enabled);
 
     return count;
-}
-
-static void
-sring_txq_notification(struct bpfhv_tx_context *ctx, int enable)
-{
-    struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
-
-    priv->kick_enabled = !!enable;
-    if (enable) {
-        __atomic_thread_fence(__ATOMIC_ACQUIRE);
-    }
-}
-
-static void
-sring_txq_dump(struct bpfhv_tx_context *ctx)
-{
-    struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
-
-    printf("sring.txq cl %u co %u pr %u kick %u intr %u\n",
-           ACCESS_ONCE(priv->clear), ACCESS_ONCE(priv->cons),
-           ACCESS_ONCE(priv->prod), ACCESS_ONCE(priv->kick_enabled),
-           ACCESS_ONCE(priv->intr_enabled));
-}
-
-static void
-sring_rxq_notification(struct bpfhv_rx_context *ctx, int enable)
-{
-    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
-
-    priv->kick_enabled = !!enable;
-    if (enable) {
-        __atomic_thread_fence(__ATOMIC_ACQUIRE);
-    }
-}
-
-static int
-sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
-               size_t max_pkt_size, int vnet_hdr_len,
-               int *can_receive, int *notify)
-{
-    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
-    uint32_t prod = ACCESS_ONCE(priv->prod);
-    uint32_t cons = priv->cons;
-    struct iovec iov[BPFHV_MAX_TX_BUFS];
-    int count;
-
-    *can_receive = 1;
-
-    for (count = 0;; count++) {
-        uint32_t cons_first = cons;
-        struct sring_rx_desc *rxd;
-        size_t totsize = 0;
-        int iovcnt = 0;
-        int ret;
-
-        /* Collect enough receive descriptors to make room for a maximum
-         * sized packet. */
-        do {
-            if (unlikely(cons == prod)) {
-                /* We ran out of RX descriptors. Enable RX kicks and double
-                 * check for more available descriptors. */
-                sring_rxq_notification(ctx, /*enable=*/1);
-                prod = ACCESS_ONCE(priv->prod);
-                if (cons == prod) {
-                    /* Not enough space. We need to rewind to the first unused
-                     * descriptor and stop. */
-                    cons = cons_first;
-                    *can_receive = 0;
-                    goto out;
-                }
-                sring_rxq_notification(ctx, /*enable=*/0);
-            }
-
-            rxd = priv->desc + (cons & priv->qmask);
-            iov[iovcnt].iov_base = translate_addr(be, rxd->paddr, rxd->len);
-            if (unlikely(rxd->len < sizeof(struct virtio_net_hdr_v1) ||
-                         iov[iovcnt].iov_base == NULL)) {
-                /* Invalid descriptor. */
-                rxd->len = 0;
-                rxd->flags = 0;
-                if (verbose) {
-                    fprintf(stderr, "Invalid RX descriptor: gpa%"PRIx64", "
-                                    "len %u\n", rxd->paddr, rxd->len);
-                }
-            } else {
-                iov[iovcnt].iov_len = rxd->len;
-                totsize += rxd->len;
-                iovcnt++;
-            }
-            cons++;
-        } while (totsize < max_pkt_size && iovcnt < BPFHV_MAX_TX_BUFS);
-
-        /* Read into the scatter-gather buffer referenced by the collected
-         * descriptors. */
-        ret = readv(be->tapfd, iov, iovcnt);
-        if (ret < 0 && errno == EAGAIN) {
-            /* No more data to read. We need to rewind to the first unused
-             * descriptor and stop. */
-            cons = cons_first;
-            break;
-        }
-#if 0
-        printf("Received %d bytes\n", ret);
-#endif
-
-        /* Write back to the receive descriptors effectively used. */
-        for (cons = cons_first; ret > 0; cons++) {
-            rxd = priv->desc + (cons & priv->qmask);
-
-            if (unlikely(rxd->len == 0)) {
-                /* This was an invalid descriptor. */
-                continue;
-            }
-
-            rxd->flags = 0;
-            rxd->len = (rxd->len <= ret) ? rxd->len : ret;
-            ret -= rxd->len;
-        }
-        rxd->flags |= SRING_DESC_F_EOP;
-    }
-
-out:
-    __atomic_thread_fence(__ATOMIC_RELEASE);
-    priv->cons = cons;
-    __atomic_thread_fence(__ATOMIC_RELEASE);
-    *notify = ACCESS_ONCE(priv->intr_enabled);
-
-    return count;
-}
-
-static void
-sring_rxq_dump(struct bpfhv_rx_context *ctx)
-{
-    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
-
-    printf("sring.rxq cl %u co %u pr %u kick %u intr %u\n",
-           ACCESS_ONCE(priv->clear), ACCESS_ONCE(priv->cons),
-           ACCESS_ONCE(priv->prod), ACCESS_ONCE(priv->kick_enabled),
-           ACCESS_ONCE(priv->intr_enabled));
 }
 
 static void *
