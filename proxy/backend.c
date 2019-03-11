@@ -33,6 +33,8 @@
 
 #define BPFHV_MAX_QUEUES        16
 
+static int verbose = 0;
+
 typedef struct BpfhvBackendMemoryRegion {
     uint64_t    gpa_start;
     uint64_t    gpa_end;
@@ -154,7 +156,7 @@ sring_tx_ctx_size(size_t num_tx_bufs)
 	num_tx_bufs * sizeof(struct sring_tx_desc);
 }
 
-void
+static void
 sring_rx_ctx_init(struct bpfhv_rx_context *ctx, size_t num_rx_bufs)
 {
     struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
@@ -166,7 +168,7 @@ sring_rx_ctx_init(struct bpfhv_rx_context *ctx, size_t num_rx_bufs)
     memset(priv->desc, 0, num_rx_bufs * sizeof(priv->desc[0]));
 }
 
-void
+static void
 sring_tx_ctx_init(struct bpfhv_tx_context *ctx, size_t num_tx_bufs)
 {
     struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
@@ -196,19 +198,6 @@ struct virtio_net_hdr_v1 {
 };
 
 #define BPFHV_HV_TX_BUDGET      64
-
-static size_t
-iov_size(struct iovec *iov, size_t iovcnt)
-{
-    size_t len = 0;
-    size_t i;
-
-    for (i = 0; i < iovcnt; i++) {
-        len += iov[i].iov_len;
-    }
-
-    return len;
-}
 
 static ssize_t
 sring_txq_drain(BpfhvBackend *be,
@@ -260,8 +249,9 @@ sring_txq_drain(BpfhvBackend *be,
             }
 
             ret = writev(be->tapfd, iov, iovcnt);
-            printf("Transmitted iovcnt %u size %zu --> %d\n", iovcnt,
-                   iov_size(iov, iovcnt), ret);
+#if 0
+            printf("Transmitted iovcnt %u --> %d\n", iovcnt, ret);
+#endif
             if (unlikely(ret <= 0)) {
                 if (ret < 0) {
                     fprintf(stderr, "Transmit failure: %s\n", strerror(errno));
@@ -300,7 +290,7 @@ sring_txq_notification(struct bpfhv_tx_context *ctx, int enable)
     }
 }
 
-void
+static void
 sring_txq_dump(struct bpfhv_tx_context *ctx)
 {
     struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
@@ -319,7 +309,7 @@ sring_can_receive(struct bpfhv_rx_context *ctx)
     return (priv->cons != ACCESS_ONCE(priv->prod));
 }
 
-void
+static void
 sring_rxq_notification(struct bpfhv_rx_context *ctx, int enable)
 {
     struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
@@ -384,7 +374,9 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
         if (ret < 0 && errno == EAGAIN) {
             break;
         }
+#if 0
         printf("Received %d bytes\n", ret);
+#endif
 
         /* Write back to the receive descriptors effectively used. */
         for (cons = cons_first; ret > 0; cons++) {
@@ -411,7 +403,7 @@ out:
     return count;
 }
 
-void
+static void
 sring_rxq_dump(struct bpfhv_rx_context *ctx)
 {
     struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
@@ -458,8 +450,11 @@ process_packets(void *opaque)
     struct pollfd *pfd_stop;
     unsigned int nfds;
     unsigned int i;
+    int very_verbose = (verbose >= 2);
 
-    printf("Thread started\n");
+    if (verbose) {
+        printf("Thread started\n");
+    }
 
     nfds = 2 + be->num_queues;
     pfd = calloc(nfds, sizeof(pfd[0]));
@@ -494,7 +489,9 @@ process_packets(void *opaque)
 
             if (pfd[i].revents & POLLIN) {
 
-                printf("Kick on %s\n", rxq->name);
+                if (unlikely(very_verbose)) {
+                    printf("Kick on %s\n", rxq->name);
+                }
                 eventfd_drain(pfd[i].fd);
             }
             can_receive |= sring_can_receive(rxq->ctx.rx);
@@ -505,13 +502,19 @@ process_packets(void *opaque)
                 BpfhvBackendQueue *txq = be->q + i;
                 int notify = 0;
 
-                printf("Kick on %s\n", txq->name);
+                if (unlikely(very_verbose)) {
+                    printf("Kick on %s\n", txq->name);
+                }
                 sring_txq_drain(be, txq->ctx.tx, 0, &notify);
                 if (notify) {
                     eventfd_signal(txq->irqfd);
-                    printf("Interrupt on %s\n", txq->name);
+                    if (unlikely(very_verbose)) {
+                        printf("Interrupt on %s\n", txq->name);
+                    }
                 }
-                sring_txq_dump(txq->ctx.tx);
+                if (unlikely(very_verbose)) {
+                    sring_txq_dump(txq->ctx.tx);
+                }
                 eventfd_drain(pfd[i].fd);
             }
         }
@@ -524,14 +527,20 @@ process_packets(void *opaque)
                            0, &notify);
             if (notify) {
                 eventfd_signal(rxq->irqfd);
-                printf("Interrupt on %s\n", rxq->name);
+                if (unlikely(very_verbose)) {
+                    printf("Interrupt on %s\n", rxq->name);
+                }
             }
-            sring_rxq_dump(rxq->ctx.rx);
+            if (unlikely(very_verbose)) {
+                sring_rxq_dump(rxq->ctx.rx);
+            }
         }
 
         if (unlikely(pfd_stop->revents & POLLIN)) {
             eventfd_drain(pfd_stop->fd);
-            printf("Thread stopped\n");
+            if (verbose) {
+                printf("Thread stopped\n");
+            }
             break;
         }
     }
@@ -660,7 +669,9 @@ main_loop(BpfhvBackend *be)
 
         if (n == 0) {
             /* EOF */
-            printf("Connection closed by the hypervisor\n");
+            if (verbose) {
+                printf("Connection closed by the hypervisor\n");
+            }
             break;
         }
 
@@ -763,7 +774,9 @@ main_loop(BpfhvBackend *be)
         switch (msg.hdr.reqtype) {
         case BPFHV_PROXY_REQ_SET_FEATURES:
             be->features_sel = be->features_avail & msg.payload.u64;
-            printf("Negotiated features %"PRIx64"\n", be->features_sel);
+            if (verbose) {
+                printf("Negotiated features %"PRIx64"\n", be->features_sel);
+            }
             break;
 
         case BPFHV_PROXY_REQ_GET_FEATURES:
@@ -785,9 +798,11 @@ main_loop(BpfhvBackend *be)
                 be->num_queue_pairs = (unsigned int)params->num_rx_queues;
                 be->num_rx_bufs = (unsigned int)params->num_rx_bufs;
                 be->num_tx_bufs = (unsigned int)params->num_tx_bufs;
-                printf("Set queue parameters: %u queue pairs, %u rx bufs, "
-                       "%u tx bufs\n", be->num_queue_pairs,
-                        be->num_rx_bufs, be->num_tx_bufs);
+                if (verbose) {
+                    printf("Set queue parameters: %u queue pairs, %u rx bufs, "
+                          "%u tx bufs\n", be->num_queue_pairs,
+                           be->num_rx_bufs, be->num_tx_bufs);
+                }
 
                 be->num_queues = 2 * be->num_queue_pairs;
 
@@ -867,14 +882,16 @@ main_loop(BpfhvBackend *be)
             }
             be->num_regions = map->num_regions;
 
-            printf("Guest memory map:\n");
-            for (i = 0; i < be->num_regions; i++) {
-                printf("    gpa %16"PRIx64", size %16"PRIu64", "
-                       "hv_vaddr %16"PRIx64", mmap_ofs %16"PRIx64", "
-                       "va_start %p\n",
-                       be->regions[i].gpa_start, be->regions[i].size,
-                       be->regions[i].hv_vaddr, be->regions[i].mmap_offset,
-                       be->regions[i].va_start);
+            if (verbose) {
+                printf("Guest memory map:\n");
+                for (i = 0; i < be->num_regions; i++) {
+                    printf("    gpa %16"PRIx64", size %16"PRIu64", "
+                           "hv_vaddr %16"PRIx64", mmap_ofs %16"PRIx64", "
+                           "va_start %p\n",
+                           be->regions[i].gpa_start, be->regions[i].size,
+                           be->regions[i].hv_vaddr, be->regions[i].mmap_offset,
+                           be->regions[i].va_start);
+                }
             }
             break;
         }
@@ -931,8 +948,10 @@ main_loop(BpfhvBackend *be)
                                       be->num_tx_bufs);
                 }
             }
-            printf("Set queue %s gpa to %"PRIx64", va %p\n",
-                   be->q[queue_idx].name, gpa, ctx);
+            if (verbose) {
+                printf("Set queue %s gpa to %"PRIx64", va %p\n",
+                       be->q[queue_idx].name, gpa, ctx);
+            }
 
             break;
         }
@@ -966,8 +985,10 @@ main_loop(BpfhvBackend *be)
             /* Steal it from the fds array to skip close(). */
             fds[0] = -1;
 
-            printf("Set queue %s %sfd to %d\n", be->q[queue_idx].name,
-                   is_kick ? "kick" : "irq", *fdp);
+            if (verbose) {
+                printf("Set queue %s %sfd to %d\n", be->q[queue_idx].name,
+                       is_kick ? "kick" : "irq", *fdp);
+            }
 
             break;
         }
@@ -986,7 +1007,9 @@ main_loop(BpfhvBackend *be)
             be->upgrade_fd = fds[0];
             fds[0] = -1;
 
-            printf("Set upgrade notifier to %d\n", be->upgrade_fd);
+            if (verbose) {
+                printf("Set upgrade notifier to %d\n", be->upgrade_fd);
+            }
             break;
         }
 
@@ -1021,7 +1044,9 @@ main_loop(BpfhvBackend *be)
                 break;
             }
             be->running = 1;
-            printf("Backend starts processing\n");
+            if (verbose) {
+                printf("Backend starts processing\n");
+            }
             break;
         }
 
@@ -1061,7 +1086,9 @@ main_loop(BpfhvBackend *be)
                 break;
             }
             be->running = 0;
-            printf("Backend stops processing\n");
+            if (verbose) {
+                printf("Backend stops processing\n");
+            }
             break;
         }
 
@@ -1136,7 +1163,7 @@ main_loop(BpfhvBackend *be)
 }
 
 static int
-tap_alloc(char *ifname)
+tap_alloc(const char *ifname)
 {
     struct ifreq ifr;
     int fd, err;
@@ -1173,7 +1200,9 @@ usage(const char *progname)
     printf("%s:\n"
            "    -h (show this help and exit)\n"
            "    -p UNIX_SOCKET_PATH\n"
-           "    -f EBPF_PROGS_PATH\n",
+           "    -t TAP_NAME\n"
+           "    -f EBPF_PROGS_PATH\n"
+           "    -v (increase verbosity level)\n",
             progname);
 }
 
@@ -1181,6 +1210,7 @@ int
 main(int argc, char **argv)
 {
     struct sockaddr_un server_addr = { };
+    const char *tapname = "tapx";
     const char *path = NULL;
     BpfhvBackend be = { };
     int opt;
@@ -1189,7 +1219,7 @@ main(int argc, char **argv)
 
     be.progfile = "proxy/sring_progs.o";
 
-    while ((opt = getopt(argc, argv, "hp:f:")) != -1) {
+    while ((opt = getopt(argc, argv, "hp:f:t:v")) != -1) {
         switch (opt) {
         case 'h':
             usage(argv[0]);
@@ -1202,6 +1232,14 @@ main(int argc, char **argv)
         case 'f':
             be.progfile = optarg;
             break;
+
+        case 't':
+            tapname = optarg;
+            break;
+
+        case 'v':
+            verbose++;
+            break;
         }
     }
 
@@ -1212,7 +1250,7 @@ main(int argc, char **argv)
     }
 
     /* Open the TAP device to use as. */
-    be.tapfd = tap_alloc("tapx");
+    be.tapfd = tap_alloc(tapname);
     if (be.tapfd < 0) {
         fprintf(stderr, "Failed to allocate TAP device\n");
         return -1;
