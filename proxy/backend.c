@@ -19,6 +19,7 @@
 #include <linux/if_tun.h>
 #include <sys/ioctl.h>
 #include <sys/uio.h>
+#include <signal.h>
 
 #include "bpfhv-proxy.h"
 #include "bpfhv.h"
@@ -107,6 +108,55 @@ typedef struct BpfhvBackend {
     /* RX and TX queues (in this order). */
     BpfhvBackendQueue q[BPFHV_MAX_QUEUES];
 } BpfhvBackend;
+
+/* Main data structure. */
+static BpfhvBackend be;
+
+/* Helper functions to signal and drain eventfds. */
+static inline void
+eventfd_drain(int fd)
+{
+    uint64_t x = 123;
+    int n;
+
+    n = read(fd, &x, sizeof(x));
+    if (unlikely(n != sizeof(x))) {
+        assert(n < 0);
+        fprintf(stderr, "read() failed: %s\n", strerror(errno));
+    }
+}
+
+static inline void
+eventfd_signal(int fd)
+{
+    uint64_t x = 1;
+    int n;
+
+    n = write(fd, &x, sizeof(x));
+    if (unlikely(n != sizeof(x))) {
+        assert(n < 0);
+        fprintf(stderr, "read() failed: %s\n", strerror(errno));
+    }
+}
+
+static void
+sigint_handler(int signum)
+{
+    int ret;
+
+    if (be.running) {
+        if (verbose) {
+            printf("Running backend interrupted\n");
+        }
+        eventfd_signal(be.stopfd);
+        ret = pthread_join(be.th, NULL);
+        if (ret) {
+            fprintf(stderr, "pthread_join() failed: %s\n",
+                    strerror(ret));
+        }
+    }
+    exit(EXIT_SUCCESS);
+}
 
 /* Translate guest physical address into host virtual address.
  * This is not thread-safe at the moment being. */
@@ -420,32 +470,6 @@ sring_rxq_dump(struct bpfhv_rx_context *ctx)
            ACCESS_ONCE(priv->clear), ACCESS_ONCE(priv->cons),
            ACCESS_ONCE(priv->prod), ACCESS_ONCE(priv->kick_enabled),
            ACCESS_ONCE(priv->intr_enabled));
-}
-
-static inline void
-eventfd_drain(int fd)
-{
-    uint64_t x = 123;
-    int n;
-
-    n = read(fd, &x, sizeof(x));
-    if (unlikely(n != sizeof(x))) {
-        assert(n < 0);
-        fprintf(stderr, "read() failed: %s\n", strerror(errno));
-    }
-}
-
-static inline void
-eventfd_signal(int fd)
-{
-    uint64_t x = 1;
-    int n;
-
-    n = write(fd, &x, sizeof(x));
-    if (unlikely(n != sizeof(x))) {
-        assert(n < 0);
-        fprintf(stderr, "read() failed: %s\n", strerror(errno));
-    }
 }
 
 static void *
@@ -1101,17 +1125,7 @@ main_loop(BpfhvBackend *be)
             }
 
             /* Notify the worker thread and join it. */
-            {
-                uint64_t x = 1;
-                int n;
-
-                n = write(be->stopfd, &x, sizeof(x));
-                if (n != sizeof(x)) {
-                    assert(n < 0);
-                    fprintf(stderr, "write() failed: %s\n", strerror(errno));
-                    exit(EXIT_FAILURE);
-                }
-            }
+            eventfd_signal(be->stopfd);
             ret = pthread_join(be->th, NULL);
             if (ret) {
                 fprintf(stderr, "pthread_join() failed: %s\n",
@@ -1277,7 +1291,7 @@ main(int argc, char **argv)
     struct sockaddr_un server_addr = { };
     const char *tapname = "tapx";
     const char *path = NULL;
-    BpfhvBackend be = { };
+    struct sigaction sa;
     int csum = 0;
     int gso = 0;
     int opt;
@@ -1322,6 +1336,21 @@ main(int argc, char **argv)
         fprintf(stderr, "Missing UNIX socket path\n");
         usage(argv[0]);
         return -1;
+    }
+
+    /* Set some signal handler for graceful termination. */
+    sa.sa_handler = sigint_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    ret         = sigaction(SIGINT, &sa, NULL);
+    if (ret) {
+        perror("sigaction(SIGINT)");
+        return ret;
+    }
+    ret = sigaction(SIGTERM, &sa, NULL);
+    if (ret) {
+        perror("sigaction(SIGTERM)");
+        return ret;
     }
 
     /* Open the TAP device to use as network backend. */
