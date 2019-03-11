@@ -398,7 +398,7 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
                 sring_rxq_notification(ctx, /*enable=*/1);
                 prod = ACCESS_ONCE(priv->prod);
                 if (cons == prod) {
-                    /* Not enough space, we must rewind to the first unused
+                    /* Not enough space. We need to rewind to the first unused
                      * descriptor and stop. */
                     cons = cons_first;
                     *can_receive = 0;
@@ -430,6 +430,9 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
          * descriptors. */
         ret = readv(be->tapfd, iov, iovcnt);
         if (ret < 0 && errno == EAGAIN) {
+            /* No more data to read. We need to rewind to the first unused
+             * descriptor and stop. */
+            cons = cons_first;
             break;
         }
 #if 0
