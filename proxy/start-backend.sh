@@ -10,7 +10,9 @@ sigint() {
 }
 trap 'sigint' INT
 
+set -x
 sudo ip tuntap add mode tap name $IF
 sudo ip link set $IF up
 sudo ip addr add $IPADDR dev $IF
-sudo proxy/backend -p $SOCK -t $IF -v
+sudo proxy/backend -p $SOCK -t $IF -v $@
+sigint

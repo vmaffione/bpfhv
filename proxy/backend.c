@@ -592,7 +592,6 @@ main_loop(BpfhvBackend *be)
     int ret = -1;
     int i;
 
-    be->features_avail = BPFHV_F_SG;
     be->features_sel = 0;
     be->num_queue_pairs = be->num_queues = 0;
     be->num_rx_bufs = 0;
@@ -1163,7 +1162,7 @@ main_loop(BpfhvBackend *be)
 }
 
 static int
-tap_alloc(const char *ifname)
+tap_alloc(const char *ifname, int csum, int gso)
 {
     struct ifreq ifr;
     int fd, err;
@@ -1176,19 +1175,50 @@ tap_alloc(const char *ifname)
     /* Open the clone device. */
     fd = open("/dev/net/tun", O_RDWR);
     if (fd < 0) {
+        fprintf(stderr, "open(/dev/net/tun) failed: %s\n",
+                strerror(errno));
         return fd;
     }
 
     memset(&ifr, 0, sizeof(ifr));
     /* IFF_TAP, IFF_TUN, IFF_NO_PI, IFF_VNET_HDR */
     ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
+    if (csum || gso) {
+        ifr.ifr_flags |= IFF_VNET_HDR;
+    }
     strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
 
     /* Try to create the device. */
     err = ioctl(fd, TUNSETIFF, (void *)&ifr);
     if(err < 0) {
+        fprintf(stderr, "ioctl(tapfd, TUNSETIFF) failed: %s\n",
+                strerror(errno));
         close(fd);
         return err;
+    }
+
+    if (csum || gso) {
+        int len = sizeof(struct virtio_net_hdr_v1);
+        unsigned int offloads = 0;
+
+        err = ioctl(fd, TUNSETVNETHDRSZ, &len);
+        if (err < 0) {
+            fprintf(stderr, "ioctl(tapfd, TUNSETIFF) failed: %s\n",
+                    strerror(errno));
+        }
+
+        if (csum) {
+            offloads |= TUN_F_CSUM;
+            if (gso) {
+                offloads |= TUN_F_TSO4 | TUN_F_TSO6 | TUN_F_UFO;
+            }
+        }
+
+        err = ioctl(fd, TUNSETOFFLOAD, offloads);
+        if (err < 0) {
+            fprintf(stderr, "ioctl(tapfd, TUNSETOFFLOAD) failed: %s\n",
+                    strerror(errno));
+        }
     }
 
     return fd;
@@ -1202,6 +1232,8 @@ usage(const char *progname)
            "    -p UNIX_SOCKET_PATH\n"
            "    -t TAP_NAME\n"
            "    -f EBPF_PROGS_PATH\n"
+           "    -C (enable checksum offloads)\n"
+           "    -G (enable TCP/UDP GSO offloads)\n"
            "    -v (increase verbosity level)\n",
             progname);
 }
@@ -1213,13 +1245,15 @@ main(int argc, char **argv)
     const char *tapname = "tapx";
     const char *path = NULL;
     BpfhvBackend be = { };
+    int csum = 0;
+    int gso = 0;
     int opt;
     int cfd;
     int ret;
 
     be.progfile = "proxy/sring_progs.o";
 
-    while ((opt = getopt(argc, argv, "hp:f:t:v")) != -1) {
+    while ((opt = getopt(argc, argv, "hp:f:t:CGv")) != -1) {
         switch (opt) {
         case 'h':
             usage(argv[0]);
@@ -1240,6 +1274,14 @@ main(int argc, char **argv)
         case 'v':
             verbose++;
             break;
+
+        case 'C':
+            csum = 1;
+            break;
+
+        case 'G':
+            gso = csum = 1;
+            break;
         }
     }
 
@@ -1250,7 +1292,7 @@ main(int argc, char **argv)
     }
 
     /* Open the TAP device to use as. */
-    be.tapfd = tap_alloc(tapname);
+    be.tapfd = tap_alloc(tapname, csum, gso);
     if (be.tapfd < 0) {
         fprintf(stderr, "Failed to allocate TAP device\n");
         return -1;
@@ -1272,6 +1314,15 @@ main(int argc, char **argv)
     }
 
     be.cfd = cfd;
+    be.features_avail = BPFHV_F_SG;
+    if (csum) {
+        be.features_avail |= BPFHV_F_TX_CSUM | BPFHV_F_TX_CSUM;
+        if (gso) {
+            be.features_avail |= BPFHV_F_TSOv4 | BPFHV_F_TCPv4_LRO
+                              |  BPFHV_F_TSOv6 | BPFHV_F_TCPv6_LRO
+                              |  BPFHV_F_UFO   | BPFHV_F_UDP_LRO;
+        }
+    }
     ret = main_loop(&be);
     close(cfd);
     close(be.tapfd);
