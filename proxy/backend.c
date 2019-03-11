@@ -279,7 +279,7 @@ sring_txq_drain(BpfhvBackend *be,
     return count;
 }
 
-void
+static void
 sring_txq_notification(struct bpfhv_tx_context *ctx, int enable)
 {
     struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
@@ -448,12 +448,13 @@ process_packets(void *opaque)
     int can_receive;
     unsigned int i;
     int very_verbose = (verbose >= 2);
+    size_t max_pkt_size = 1518;
 
     if (verbose) {
         printf("Thread started\n");
     }
 
-    nfds = 2 + be->num_queues;
+    nfds = be->num_queues + 2;
     pfd = calloc(nfds, sizeof(pfd[0]));
     assert(pfd != NULL);
     pfd_tap = pfd + nfds - 2;
@@ -468,6 +469,10 @@ process_packets(void *opaque)
     pfd_stop->fd = be->stopfd;
     pfd_stop->events = POLLIN;
     can_receive = 1;
+
+    for (i = be->num_queue_pairs; i < be->num_queues; i++) {
+        sring_txq_notification(be->q[i].ctx.tx, /*enable=*/1);
+    }
 
     for (;;) {
         int n;
@@ -518,7 +523,7 @@ process_packets(void *opaque)
             BpfhvBackendQueue *rxq = be->q + 0;
             int notify = 0;
 
-            sring_rxq_push(be, rxq->ctx.rx, /*max_pkt_size=*/1518,
+            sring_rxq_push(be, rxq->ctx.rx, max_pkt_size,
                            0, &can_receive, &notify);
             if (notify) {
                 eventfd_signal(rxq->irqfd);
