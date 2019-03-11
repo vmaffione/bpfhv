@@ -373,6 +373,8 @@ process_packets(void *opaque)
     BpfhvBackend *be = opaque;
     int can_receive = 1;
     struct pollfd *pfd;
+    struct pollfd *pfd_tap;
+    struct pollfd *pfd_stop;
     unsigned int nfds;
     unsigned int i;
 
@@ -381,20 +383,22 @@ process_packets(void *opaque)
     nfds = 2 + be->num_queues;
     pfd = calloc(nfds, sizeof(pfd[0]));
     assert(pfd != NULL);
+    pfd_tap = pfd + nfds - 2;
+    pfd_stop = pfd + nfds - 1;
 
     for (i = 0; i < be->num_queues; i++) {
         pfd[i].fd = be->q[i].kickfd;
         pfd[i].events = POLLIN;
     }
-    pfd[nfds-2].fd = be->tapfd;
-    pfd[nfds-2].events = 0;
-    pfd[nfds-1].fd = be->stopfd;
-    pfd[nfds-1].events = POLLIN;
+    pfd_tap->fd = be->tapfd;
+    pfd_tap->events = 0;
+    pfd_stop->fd = be->stopfd;
+    pfd_stop->events = POLLIN;
 
     for (;;) {
         int n;
 
-        pfd[nfds-2].events = can_receive ? POLLIN : 0;
+        pfd_tap->events = can_receive ? POLLIN : 0;
 
         n = poll(pfd, nfds, -1);
         if (unlikely(n <= 0)) {
@@ -431,7 +435,7 @@ process_packets(void *opaque)
             }
         }
 
-        if (pfd[nfds-2].revents & POLLIN) {
+        if (pfd_tap->revents & POLLIN) {
             for (;;) {
                 char buf[2048];
                 int ret = read(be->tapfd, buf, 2048);
@@ -443,8 +447,8 @@ process_packets(void *opaque)
             }
         }
 
-        if (unlikely(pfd[nfds-1].revents & POLLIN)) {
-            eventfd_drain(pfd[nfds-1].fd);
+        if (unlikely(pfd_stop->revents & POLLIN)) {
+            eventfd_drain(pfd_stop->fd);
             printf("Thread stopped\n");
             break;
         }
