@@ -107,7 +107,7 @@ typedef struct BpfhvBackend {
 
 /* Translate guest physical address into host virtual address.
  * This is not thread-safe at the moment being. */
-static void *
+static inline void *
 translate_addr(BpfhvBackend *be, uint64_t gpa, uint64_t len)
 {
     BpfhvBackendMemoryRegion  *re = be->regions + 0;
@@ -301,14 +301,6 @@ sring_txq_dump(struct bpfhv_tx_context *ctx)
            ACCESS_ONCE(priv->intr_enabled));
 }
 
-static int
-sring_can_receive(struct bpfhv_rx_context *ctx)
-{
-    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
-
-    return (priv->cons != ACCESS_ONCE(priv->prod));
-}
-
 static void
 sring_rxq_notification(struct bpfhv_rx_context *ctx, int enable)
 {
@@ -322,13 +314,16 @@ sring_rxq_notification(struct bpfhv_rx_context *ctx, int enable)
 
 static int
 sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
-               size_t max_pkt_size, int vnet_hdr_len, int *notify)
+               size_t max_pkt_size, int vnet_hdr_len,
+               int *can_receive, int *notify)
 {
     struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
     uint32_t prod = ACCESS_ONCE(priv->prod);
     uint32_t cons = priv->cons;
     struct iovec iov[BPFHV_MAX_TX_BUFS];
     int count;
+
+    *can_receive = 1;
 
     for (count = 0;; count++) {
         uint32_t cons_first = cons;
@@ -349,6 +344,7 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
                     /* Not enough space, we must rewind to the first unused
                      * descriptor and stop. */
                     cons = cons_first;
+                    *can_receive = 0;
                     goto out;
                 }
                 sring_rxq_notification(ctx, 0);
@@ -356,7 +352,8 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
 
             rxd = priv->desc + (cons & priv->qmask);
             iov[iovcnt].iov_base = translate_addr(be, rxd->paddr, rxd->len);
-            if (unlikely(iov[iovcnt].iov_base == NULL)) {
+            if (unlikely(rxd->len < sizeof(struct virtio_net_hdr_v1) ||
+                         iov[iovcnt].iov_base == NULL)) {
                 /* Invalid descriptor. */
                 rxd->len = 0;
                 rxd->flags = 0;
@@ -444,11 +441,11 @@ static void *
 process_packets(void *opaque)
 {
     BpfhvBackend *be = opaque;
-    int can_receive = 1;
     struct pollfd *pfd;
     struct pollfd *pfd_tap;
     struct pollfd *pfd_stop;
     unsigned int nfds;
+    int can_receive;
     unsigned int i;
     int very_verbose = (verbose >= 2);
 
@@ -470,6 +467,7 @@ process_packets(void *opaque)
     pfd_tap->events = 0;
     pfd_stop->fd = be->stopfd;
     pfd_stop->events = POLLIN;
+    can_receive = 1;
 
     for (;;) {
         int n;
@@ -483,18 +481,15 @@ process_packets(void *opaque)
             break;
         }
 
-        can_receive = 0;
         for (i = 0; i < be->num_queue_pairs; i++) {
             BpfhvBackendQueue *rxq = be->q + i;
 
             if (pfd[i].revents & POLLIN) {
-
                 if (unlikely(very_verbose)) {
                     printf("Kick on %s\n", rxq->name);
                 }
                 eventfd_drain(pfd[i].fd);
             }
-            can_receive |= sring_can_receive(rxq->ctx.rx);
         }
 
         for (; i < be->num_queues; i++) {
@@ -524,7 +519,7 @@ process_packets(void *opaque)
             int notify = 0;
 
             sring_rxq_push(be, rxq->ctx.rx, /*max_pkt_size=*/1518,
-                           0, &notify);
+                           0, &can_receive, &notify);
             if (notify) {
                 eventfd_signal(rxq->irqfd);
                 if (unlikely(very_verbose)) {
