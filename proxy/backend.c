@@ -929,17 +929,31 @@ main_loop(BpfhvBackend *be)
                 break;
             }
 
+            if (be->num_rx_bufs == 0 || be->num_tx_bufs == 0) {
+                resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
+                fprintf(stderr, "Buffer numbers not negotiated\n");
+                break;
+            }
+
             if (is_rx) {
                 ctx_size = sring_rx_ctx_size(be->num_rx_bufs);
             } else if (queue_idx < be->num_queues) {
                 ctx_size = sring_tx_ctx_size(be->num_tx_bufs);
             }
 
-            ctx = translate_addr(be, gpa, ctx_size);
-            if (gpa && ctx == NULL) {
-                resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
-                fprintf(stderr, "Failed to translate gpa %"PRIx64"\n", gpa);
-                break;
+            if (gpa != 0) {
+                /* A GPA was provided, so let's try to translate it. */
+                ctx = translate_addr(be, gpa, ctx_size);
+                if (ctx == NULL) {
+                    resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
+                    fprintf(stderr, "Failed to translate gpa %"PRIx64"\n",
+                                     gpa);
+                    break;
+                }
+            } else {
+                /* No GPA provided, which means that there is no context
+                 * for this queue (yet). */
+                ctx = NULL;
             }
 
             if (is_rx) {

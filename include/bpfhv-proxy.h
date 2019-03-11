@@ -57,6 +57,7 @@ typedef struct BpfhvProxyCtxSizes {
 typedef struct BpfhvProxyQueueCtx {
     /* Queues [0..N-1] are for receive. Queues [N..2N-1] are for transmit. */
     uint32_t            queue_idx;
+    uint32_t            pad;
     uint64_t            guest_physical_addr;
 } BpfhvProxyQueueCtx;
 
