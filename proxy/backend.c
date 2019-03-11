@@ -489,6 +489,8 @@ process_packets(void *opaque)
     for (;;) {
         int n;
 
+        /* Poll TAP interface for new receive packets only if we
+         * can actually receive packets. */
         pfd_tap->events = can_receive ? POLLIN : 0;
 
         n = poll(pfd, nfds, -1);
@@ -498,6 +500,7 @@ process_packets(void *opaque)
             break;
         }
 
+        /* Drain RXQ kickfds if needed. */
         for (i = 0; i < be->num_queue_pairs; i++) {
             BpfhvBackendQueue *rxq = be->q + i;
 
@@ -506,9 +509,11 @@ process_packets(void *opaque)
                     printf("Kick on %s\n", rxq->name);
                 }
                 eventfd_drain(pfd[i].fd);
+                can_receive = 1;  /* assume we can receive now */
             }
         }
 
+        /* Process TX kicks by draining the corresponding TX queues. */
         for (; i < be->num_queues; i++) {
             if (pfd[i].revents & POLLIN) {
                 BpfhvBackendQueue *txq = be->q + i;
@@ -531,6 +536,8 @@ process_packets(void *opaque)
             }
         }
 
+        /* Receive packets from the TAP interface and push them to
+         * the first (and unique) RXQ. */
         if (pfd_tap->revents & POLLIN) {
             BpfhvBackendQueue *rxq = be->q + 0;
             int notify = 0;
@@ -548,6 +555,7 @@ process_packets(void *opaque)
             }
         }
 
+        /* Check if we need to stop. */
         if (unlikely(pfd_stop->revents & POLLIN)) {
             eventfd_drain(pfd_stop->fd);
             if (verbose) {
