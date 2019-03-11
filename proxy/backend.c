@@ -60,6 +60,9 @@ typedef struct BpfhvBackend {
     /* File descriptor of the TAP device (the real net backend). */
     int tapfd;
 
+    /* Virtio-net header length used by the TAP interface. */
+    int vnet_hdr_len;
+
     /* Socket file descriptor to exchange control message with the
      * hypervisor. */
     int cfd;
@@ -449,13 +452,14 @@ static void *
 process_packets(void *opaque)
 {
     BpfhvBackend *be = opaque;
-    struct pollfd *pfd;
-    struct pollfd *pfd_tap;
+    int vnet_hdr_len = be->vnet_hdr_len;
+    int very_verbose = (verbose >= 2);
     struct pollfd *pfd_stop;
+    struct pollfd *pfd_tap;
+    struct pollfd *pfd;
     unsigned int nfds;
     int can_receive;
     unsigned int i;
-    int very_verbose = (verbose >= 2);
     size_t max_pkt_size = 1518;
 
     if (verbose) {
@@ -513,7 +517,7 @@ process_packets(void *opaque)
                 if (unlikely(very_verbose)) {
                     printf("Kick on %s\n", txq->name);
                 }
-                sring_txq_drain(be, txq->ctx.tx, 0, &notify);
+                sring_txq_drain(be, txq->ctx.tx, vnet_hdr_len, &notify);
                 if (notify) {
                     eventfd_signal(txq->irqfd);
                     if (unlikely(very_verbose)) {
@@ -532,7 +536,7 @@ process_packets(void *opaque)
             int notify = 0;
 
             sring_rxq_push(be, rxq->ctx.rx, max_pkt_size,
-                           0, &can_receive, &notify);
+                           vnet_hdr_len, &can_receive, &notify);
             if (notify) {
                 eventfd_signal(rxq->irqfd);
                 if (unlikely(very_verbose)) {
@@ -1184,7 +1188,7 @@ main_loop(BpfhvBackend *be)
 }
 
 static int
-tap_alloc(const char *ifname, int csum, int gso)
+tap_alloc(const char *ifname, int vnet_hdr_len, int csum, int gso)
 {
     struct ifreq ifr;
     int fd, err;
@@ -1220,10 +1224,9 @@ tap_alloc(const char *ifname, int csum, int gso)
     }
 
     if (csum || gso) {
-        int len = sizeof(struct virtio_net_hdr_v1);
         unsigned int offloads = 0;
 
-        err = ioctl(fd, TUNSETVNETHDRSZ, &len);
+        err = ioctl(fd, TUNSETVNETHDRSZ, &vnet_hdr_len);
         if (err < 0) {
             fprintf(stderr, "ioctl(tapfd, TUNSETIFF) failed: %s\n",
                     strerror(errno));
@@ -1313,8 +1316,10 @@ main(int argc, char **argv)
         return -1;
     }
 
-    /* Open the TAP device to use as. */
-    be.tapfd = tap_alloc(tapname, csum, gso);
+    /* Open the TAP device to use as network backend. */
+    be.vnet_hdr_len = (csum || gso) ?
+                      sizeof(struct virtio_net_hdr_v1) : 0;
+    be.tapfd = tap_alloc(tapname, be.vnet_hdr_len, csum, gso);
     if (be.tapfd < 0) {
         fprintf(stderr, "Failed to allocate TAP device\n");
         return -1;
