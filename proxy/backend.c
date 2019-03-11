@@ -330,6 +330,87 @@ sring_rxq_notification(struct bpfhv_rx_context *ctx, int enable)
     }
 }
 
+static int
+sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
+               size_t max_pkt_size, int vnet_hdr_len, int *notify)
+{
+    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
+    uint32_t prod = ACCESS_ONCE(priv->prod);
+    uint32_t cons = priv->cons;
+    struct iovec iov[BPFHV_MAX_TX_BUFS];
+    int count;
+
+    for (count = 0;; count++) {
+        uint32_t cons_first = cons;
+        struct sring_rx_desc *rxd;
+        size_t totsize = 0;
+        int iovcnt = 0;
+        int ret;
+
+        /* Collect enough receive descriptors to make room for a maximum
+         * sized packet. */
+        do {
+            if (unlikely(cons == prod)) {
+                /* We ran out of RX descriptors. Enable RX kicks and double
+                 * check for more available descriptors. */
+                sring_rxq_notification(ctx, 1);
+                prod = ACCESS_ONCE(priv->prod);
+                if (cons == prod) {
+                    /* Not enough space, we must rewind to the first unused
+                     * descriptor and stop. */
+                    cons = cons_first;
+                    goto out;
+                }
+                sring_rxq_notification(ctx, 0);
+            }
+
+            rxd = priv->desc + (cons & priv->qmask);
+            iov[iovcnt].iov_base = translate_addr(be, rxd->paddr, rxd->len);
+            if (unlikely(iov[iovcnt].iov_base == NULL)) {
+                /* Invalid descriptor. */
+                rxd->len = 0;
+                rxd->flags = 0;
+            } else {
+                iov[iovcnt].iov_len = rxd->len;
+                totsize += rxd->len;
+                iovcnt++;
+            }
+            cons++;
+        } while (totsize < max_pkt_size && iovcnt < BPFHV_MAX_TX_BUFS);
+
+        /* Read into the scatter-gather buffer referenced by the collected
+         * descriptors. */
+        ret = readv(be->tapfd, iov, iovcnt);
+        if (ret < 0 && errno == EAGAIN) {
+            break;
+        }
+        printf("Received %d bytes\n", ret);
+
+        /* Write back to the receive descriptors effectively used. */
+        for (cons = cons_first; ret > 0; cons++) {
+            rxd = priv->desc + (cons & priv->qmask);
+
+            if (unlikely(rxd->len == 0)) {
+                /* This was an invalid descriptor. */
+                continue;
+            }
+
+            rxd->flags = 0;
+            rxd->len = (rxd->len <= ret) ? rxd->len : ret;
+            ret -= rxd->len;
+        }
+        rxd->flags |= SRING_DESC_F_EOP;
+    }
+
+out:
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    priv->cons = cons;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    *notify = ACCESS_ONCE(priv->intr_enabled);
+
+    return count;
+}
+
 void
 sring_rxq_dump(struct bpfhv_rx_context *ctx)
 {
@@ -436,15 +517,16 @@ process_packets(void *opaque)
         }
 
         if (pfd_tap->revents & POLLIN) {
-            for (;;) {
-                char buf[2048];
-                int ret = read(be->tapfd, buf, 2048);
+            BpfhvBackendQueue *rxq = be->q + 0;
+            int notify = 0;
 
-                if (ret < 0 && errno == EAGAIN) {
-                    break;
-                }
-                printf("Received %d bytes\n", ret);
+            sring_rxq_push(be, rxq->ctx.rx, /*max_pkt_size=*/1518,
+                           0, &notify);
+            if (notify) {
+                eventfd_signal(rxq->irqfd);
+                printf("Interrupt on %s\n", rxq->name);
             }
+            sring_rxq_dump(rxq->ctx.rx);
         }
 
         if (unlikely(pfd_stop->revents & POLLIN)) {
@@ -1071,7 +1153,8 @@ tap_alloc(char *ifname)
     }
 
     memset(&ifr, 0, sizeof(ifr));
-    ifr.ifr_flags = IFF_TAP | IFF_NO_PI;  /* IFF_TAP, IFF_TUN, IFF_NO_PI */
+    /* IFF_TAP, IFF_TUN, IFF_NO_PI, IFF_VNET_HDR */
+    ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
     strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
 
     /* Try to create the device. */
