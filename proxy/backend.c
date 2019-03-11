@@ -222,6 +222,10 @@ sring_txq_drain(BpfhvBackend *be,
         iov[iovcnt].iov_len = txd->len;
         if (unlikely(iov[iovcnt].iov_base == NULL)) {
             /* Invalid descriptor, just skip it. */
+            if (verbose) {
+                fprintf(stderr, "Invalid TX descriptor: gpa%"PRIx64", "
+                                "len %u\n", txd->paddr, txd->len);
+            }
         } else {
             iovcnt++;
         }
@@ -338,7 +342,7 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
             if (unlikely(cons == prod)) {
                 /* We ran out of RX descriptors. Enable RX kicks and double
                  * check for more available descriptors. */
-                sring_rxq_notification(ctx, 1);
+                sring_rxq_notification(ctx, /*enable=*/1);
                 prod = ACCESS_ONCE(priv->prod);
                 if (cons == prod) {
                     /* Not enough space, we must rewind to the first unused
@@ -347,7 +351,7 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
                     *can_receive = 0;
                     goto out;
                 }
-                sring_rxq_notification(ctx, 0);
+                sring_rxq_notification(ctx, /*enable=*/0);
             }
 
             rxd = priv->desc + (cons & priv->qmask);
@@ -357,6 +361,10 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
                 /* Invalid descriptor. */
                 rxd->len = 0;
                 rxd->flags = 0;
+                if (verbose) {
+                    fprintf(stderr, "Invalid RX descriptor: gpa%"PRIx64", "
+                                    "len %u\n", rxd->paddr, rxd->len);
+                }
             } else {
                 iov[iovcnt].iov_len = rxd->len;
                 totsize += rxd->len;
