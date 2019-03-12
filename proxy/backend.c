@@ -149,27 +149,6 @@ eventfd_signal(int fd)
     }
 }
 
-static void
-sigint_handler(int signum)
-{
-    int ret;
-
-    if (be.running) {
-        if (verbose) {
-            printf("Running backend interrupted\n");
-        }
-        eventfd_signal(be.stopfd);
-        ACCESS_ONCE(be.stopflag) = 1;
-        __atomic_thread_fence(__ATOMIC_RELEASE);
-        ret = pthread_join(be.th, NULL);
-        if (ret) {
-            fprintf(stderr, "pthread_join() failed: %s\n",
-                    strerror(ret));
-        }
-    }
-    exit(EXIT_SUCCESS);
-}
-
 /* Translate guest physical address into host virtual address.
  * This is not thread-safe at the moment being. */
 static inline void *
@@ -740,6 +719,38 @@ backend_ready(BpfhvBackend *be)
            num_bufs_valid(be->num_tx_bufs) && be->num_regions > 0;
 }
 
+/* Helper function to stop the packet processing thread and join it. */
+static int
+backend_stop(BpfhvBackend *be)
+{
+    int ret;
+
+    eventfd_signal(be->stopfd);
+    ACCESS_ONCE(be->stopflag) = 1;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    ret = pthread_join(be->th, NULL);
+    if (ret) {
+        fprintf(stderr, "pthread_join() failed: %s\n",
+                strerror(ret));
+        return ret;
+    }
+    be->running = 0;
+
+    return 0;
+}
+
+static void
+sigint_handler(int signum)
+{
+    if (be.running) {
+        if (verbose) {
+            printf("Running backend interrupted\n");
+        }
+        backend_stop(&be);
+    }
+    exit(EXIT_SUCCESS);
+}
+
 /* Control loop to process requests coming from the hypervisor. */
 static int
 main_loop(BpfhvBackend *be)
@@ -1245,16 +1256,10 @@ main_loop(BpfhvBackend *be)
             }
 
             /* Notify the worker thread and join it. */
-            eventfd_signal(be->stopfd);
-            ACCESS_ONCE(be->stopflag) = 1;
-            __atomic_thread_fence(__ATOMIC_RELEASE);
-            ret = pthread_join(be->th, NULL);
+            ret = backend_stop(be);
             if (ret) {
-                fprintf(stderr, "pthread_join() failed: %s\n",
-                        strerror(ret));
                 break;
             }
-            be->running = 0;
             if (verbose) {
                 printf("Backend stops processing\n");
             }
