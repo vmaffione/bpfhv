@@ -408,9 +408,8 @@ out:
 }
 
 static size_t
-sring_txq_drain(BpfhvBackend *be,
-                struct bpfhv_tx_context *ctx,
-                int vnet_hdr_len, int *notify)
+sring_txq_drain(BpfhvBackend *be, struct bpfhv_tx_context *ctx,
+                int vnet_hdr_len, int *can_send, int *notify)
 {
     struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
     struct iovec iov[BPFHV_MAX_TX_BUFS+1];
@@ -465,11 +464,14 @@ sring_txq_drain(BpfhvBackend *be,
             printf("Transmitted iovcnt %u --> %d\n", iovcnt, ret);
 #endif
             if (unlikely(ret <= 0)) {
-                if (ret < 0) {
+                /* Backend is blocked (or failed), so we need to stop.
+                 * The last packet was not transmitted, so we need to
+                 * rewind 'cons'. */
+                if (ret == 0 && can_send != NULL) {
+                    *can_send = 0;
+                } else if (ret < 0 && verbose) {
                     fprintf(stderr, "Transmit failure: %s\n", strerror(errno));
                 }
-                /* Backend is blocked, we need to stop. The last packet was not
-                 * transmitted, so we need to rewind 'cons'. */
                 cons = first;
                 break;
             }
@@ -505,6 +507,7 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
     unsigned int nfds;
     int can_receive;
     unsigned int i;
+    int can_send;
 
     nfds = be->num_queues + 2;
     pfd = calloc(nfds, sizeof(pfd[0]));
@@ -520,18 +523,25 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
     pfd_tap->events = 0;
     pfd_stop->fd = be->stopfd;
     pfd_stop->events = POLLIN;
-    can_receive = 1;
+    can_receive = can_send = 1;
 
     for (i = be->num_queue_pairs; i < be->num_queues; i++) {
         sring_txq_notification(be->q[i].ctx.tx, /*enable=*/1);
     }
 
+    /* Only single-queue is support for now. */
+    assert(be->num_queue_pairs == 1);
+
     for (;;) {
         int n;
 
         /* Poll TAP interface for new receive packets only if we
-         * can actually receive packets. */
+         * can actually receive packets. If TAP send buffer is full we
+         * also wait on more room. */
         pfd_tap->events = can_receive ? POLLIN : 0;
+        if (unlikely(!can_send)) {
+            pfd_tap->events |= POLLOUT;
+        }
 
         n = poll(pfd, nfds, poll_timeout);
         if (unlikely(n < 0)) {
@@ -549,7 +559,7 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
 
             can_receive = 1;
             count = sring_rxq_push(be, rxq->ctx.rx, max_rx_pkt_size,
-                           vnet_hdr_len, &can_receive, &notify);
+                                   vnet_hdr_len, &can_receive, &notify);
             if (notify) {
                 eventfd_signal(rxq->irqfd);
                 if (unlikely(very_verbose)) {
@@ -572,7 +582,9 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
             int notify = 0;
             size_t count;
 
-            count = sring_txq_drain(be, txq->ctx.tx, vnet_hdr_len, &notify);
+            can_send = 1;
+            count = sring_txq_drain(be, txq->ctx.tx, vnet_hdr_len,
+                                    &can_send, &notify);
             if (notify) {
                 eventfd_signal(txq->irqfd);
                 if (unlikely(very_verbose)) {
@@ -653,7 +665,8 @@ process_packets_spin(BpfhvBackend *be, size_t max_rx_pkt_size)
             BpfhvBackendQueue *txq = be->q + i;
             int notify = 0;
 
-            sring_txq_drain(be, txq->ctx.tx, vnet_hdr_len, &notify);
+            sring_txq_drain(be, txq->ctx.tx, vnet_hdr_len,
+                            /*can_send=*/NULL, &notify);
             if (notify) {
                 eventfd_signal(txq->irqfd);
                 if (unlikely(very_verbose)) {
@@ -742,7 +755,8 @@ backend_drain(BpfhvBackend *be)
         for (;;) {
             size_t count;
 
-            count = sring_txq_drain(be, txq->ctx.tx, be->vnet_hdr_len, &notify);
+            count = sring_txq_drain(be, txq->ctx.tx, be->vnet_hdr_len,
+                                    /*can_send=*/NULL, &notify);
             drained += count;
             if (drained >= be->num_tx_bufs || count == 0) {
                 break;
