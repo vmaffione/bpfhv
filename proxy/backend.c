@@ -315,7 +315,7 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
         struct sring_rx_desc *rxd;
         size_t iovsize = 0;
         int iovcnt = 0;
-        int ret;
+        int pktsize;
 
         /* Collect enough receive descriptors to make room for a maximum
          * sized packet, plus virtio-net header, if needed. */
@@ -360,8 +360,8 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
 
         /* Read into the scatter-gather buffer referenced by the collected
          * descriptors. */
-        ret = readv(be->tapfd, iov, iovcnt);
-        if (ret < 0 && errno == EAGAIN) {
+        pktsize = readv(be->tapfd, iov, iovcnt);
+        if (pktsize < 0 && errno == EAGAIN) {
             /* No more data to read. We need to rewind to the first unused
              * descriptor and stop. */
             cons = cons_first;
@@ -372,7 +372,8 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
 #endif
 
         /* Write back to the receive descriptors effectively used. */
-        for (cons = cons_first; ret > 0; cons++) {
+        pktsize -= vnet_hdr_len;
+        for (cons = cons_first; pktsize > 0; cons++) {
             rxd = priv->desc + (cons & priv->qmask);
 
             if (unlikely(rxd->len == 0)) {
@@ -381,8 +382,8 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
             }
 
             rxd->flags = 0;
-            rxd->len = (rxd->len <= ret) ? rxd->len : ret;
-            ret -= rxd->len;
+            rxd->len = (rxd->len <= pktsize) ? rxd->len : pktsize;
+            pktsize -= rxd->len;
         }
         /* Complete the last descriptor. */
         rxd->flags = SRING_DESC_F_EOP;
@@ -1369,6 +1370,8 @@ main(int argc, char **argv)
         usage(argv[0]);
         return -1;
     }
+
+    assert(sizeof(struct virtio_net_hdr_v1) == 12);
 
     /* Set some signal handler for graceful termination. */
     sa.sa_handler = sigint_handler;
