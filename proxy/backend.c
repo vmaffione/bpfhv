@@ -285,7 +285,7 @@ sring_txq_dump(struct bpfhv_tx_context *ctx)
            ACCESS_ONCE(priv->intr_enabled));
 }
 
-static int
+static size_t
 sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
                size_t max_pkt_size, int vnet_hdr_len,
                int *can_receive, int *notify)
@@ -407,7 +407,7 @@ out:
     return count;
 }
 
-static ssize_t
+static size_t
 sring_txq_drain(BpfhvBackend *be,
                 struct bpfhv_tx_context *ctx,
                 int vnet_hdr_len, int *notify)
@@ -545,7 +545,7 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
         {
             BpfhvBackendQueue *rxq = be->q + 0;
             int notify = 0;
-            int count;
+            size_t count;
 
             can_receive = 1;
             count = sring_rxq_push(be, rxq->ctx.rx, max_rx_pkt_size,
@@ -570,7 +570,7 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
         for (i = be->num_queue_pairs; i < be->num_queues; i++) {
             BpfhvBackendQueue *txq = be->q + i;
             int notify = 0;
-            int count;
+            size_t count;
 
             count = sring_txq_drain(be, txq->ctx.tx, vnet_hdr_len, &notify);
             if (notify) {
@@ -736,12 +736,20 @@ backend_drain(BpfhvBackend *be)
     /* Drain any pending transmit buffers. */
     for (i = be->num_queue_pairs; i < be->num_queues; i++) {
         BpfhvBackendQueue *txq = be->q + i;
+        size_t drained = 0;
         int notify = 0;
-        int count;
 
-        count = sring_txq_drain(be, txq->ctx.tx, be->vnet_hdr_len, &notify);
-        if (verbose && count > 0) {
-            printf("Drained %d packets from %s\n", count, txq->name);
+        for (;;) {
+            size_t count;
+
+            count = sring_txq_drain(be, txq->ctx.tx, be->vnet_hdr_len, &notify);
+            drained += count;
+            if (drained >= be->num_tx_bufs || count == 0) {
+                break;
+            }
+        }
+        if (verbose && drained > 0) {
+            printf("Drained %zu packets from %s\n", drained, txq->name);
         }
     }
 }
