@@ -1230,6 +1230,10 @@ main_loop(BpfhvBackend *be)
                 break;  /* Nothing to do */
             }
 
+            /* Make sure that the processing thread sees stopflag == 0. */
+            be->stopflag = 0;
+            __atomic_thread_fence(__ATOMIC_RELEASE);
+
             ret = pthread_create(&be->th, NULL, process_packets, be);
             if (ret) {
                 fprintf(stderr, "pthread_create() failed: %s\n",
