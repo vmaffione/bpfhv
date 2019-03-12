@@ -31,6 +31,11 @@
 #ifndef unlikely
 #define unlikely(x)         __builtin_expect((x), 0)
 #endif
+#ifndef ACCESS_ONCE
+#define ACCESS_ONCE(x) (*(volatile typeof(x) *)&(x))
+#endif
+#define compiler_barrier() __asm__ __volatile__ ("");
+
 
 #define BPFHV_MAX_QUEUES        16
 
@@ -77,6 +82,10 @@ typedef struct BpfhvBackend {
     /* The features selected by the guest. */
     uint64_t features_sel;
 
+    /* Set if the backend is working in busy wait mode. If unset,
+     * blocking synchronization is used. */
+    int busy_wait;
+
     /* Guest memory map. */
     BpfhvBackendMemoryRegion regions[BPFHV_PROXY_MAX_REGIONS];
     size_t num_regions;
@@ -104,6 +113,7 @@ typedef struct BpfhvBackend {
 
     /* An eventfd useful to stop the processing thread. */
     int stopfd;
+    int stopflag;
 
     /* RX and TX queues (in this order). */
     BpfhvBackendQueue q[BPFHV_MAX_QUEUES];
@@ -149,6 +159,8 @@ sigint_handler(int signum)
             printf("Running backend interrupted\n");
         }
         eventfd_signal(be.stopfd);
+        ACCESS_ONCE(be.stopflag) = 1;
+        __atomic_thread_fence(__ATOMIC_RELEASE);
         ret = pthread_join(be.th, NULL);
         if (ret) {
             fprintf(stderr, "pthread_join() failed: %s\n",
@@ -191,9 +203,6 @@ translate_addr(BpfhvBackend *be, uint64_t gpa, uint64_t len)
 /*
  * The sring implementation.
  */
-
-#define ACCESS_ONCE(x) (*(volatile typeof(x) *)&(x))
-#define compiler_barrier() __asm__ __volatile__ ("");
 
 static size_t
 sring_rx_ctx_size(size_t num_rx_bufs)
@@ -307,8 +316,6 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
     struct iovec iov[BPFHV_MAX_RX_BUFS+1];
     int count;
 
-    *can_receive = 1;
-
     for (count = 0;; count++) {
         struct virtio_net_hdr_v1 hdr;
         uint32_t cons_first = cons;
@@ -326,8 +333,12 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
         }
         do {
             if (unlikely(cons == prod)) {
-                /* We ran out of RX descriptors. Enable RX kicks and double
-                 * check for more available descriptors. */
+                /* We ran out of RX descriptors. In busy-wait mode we can just
+                 * bail out. Otherwise we enable RX kicks and double check for
+                 * more available descriptors. */
+                if (can_receive == NULL) {
+                    goto out;
+                }
                 sring_rxq_notification(ctx, /*enable=*/1);
                 prod = ACCESS_ONCE(priv->prod);
                 if (cons == prod) {
@@ -406,10 +417,12 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
     }
 
 out:
-    __atomic_thread_fence(__ATOMIC_RELEASE);
-    priv->cons = cons;
-    __atomic_thread_fence(__ATOMIC_RELEASE);
-    *notify = ACCESS_ONCE(priv->intr_enabled);
+    if (count > 0) {
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+        priv->cons = cons;
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+        *notify = ACCESS_ONCE(priv->intr_enabled);
+    }
 
     return count;
 }
@@ -490,38 +503,28 @@ sring_txq_drain(BpfhvBackend *be,
         }
     }
 
-    __atomic_thread_fence(__ATOMIC_RELEASE);
-    priv->cons = cons;
-    __atomic_thread_fence(__ATOMIC_RELEASE);
-    *notify = ACCESS_ONCE(priv->intr_enabled);
+    if (count > 0) {
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+        priv->cons = cons;
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+        *notify = ACCESS_ONCE(priv->intr_enabled);
+    }
 
     return count;
 }
 
-static void *
-process_packets(void *opaque)
+static void
+process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
 {
-    BpfhvBackend *be = opaque;
     int vnet_hdr_len = be->vnet_hdr_len;
     int very_verbose = (verbose >= 2);
     struct pollfd *pfd_stop;
     struct pollfd *pfd_tap;
-    size_t max_rx_pkt_size;
     struct pollfd *pfd;
     unsigned int nfds;
     int can_receive;
     unsigned int i;
 
-    if (verbose) {
-        printf("Thread started\n");
-    }
-
-    if (be->features_avail &
-        (BPFHV_F_TCPv4_LRO | BPFHV_F_TCPv6_LRO | BPFHV_F_UDP_LRO)) {
-        max_rx_pkt_size = 65536;
-    } else {
-        max_rx_pkt_size = 1518;
-    }
     nfds = be->num_queues + 2;
     pfd = calloc(nfds, sizeof(pfd[0]));
     assert(pfd != NULL);
@@ -598,6 +601,7 @@ process_packets(void *opaque)
             BpfhvBackendQueue *rxq = be->q + 0;
             int notify = 0;
 
+            can_receive = 1;
             sring_rxq_push(be, rxq->ctx.rx, max_rx_pkt_size,
                            vnet_hdr_len, &can_receive, &notify);
             if (notify) {
@@ -622,6 +626,81 @@ process_packets(void *opaque)
     }
 
     free(pfd);
+}
+
+static void
+process_packets_spin(BpfhvBackend *be, size_t max_rx_pkt_size)
+{
+    int vnet_hdr_len = be->vnet_hdr_len;
+    int very_verbose = (verbose >= 2);
+    unsigned int i;
+
+    /* Disable all guest-->host notifications. */
+    for (i = 0; i < be->num_queue_pairs; i++) {
+        sring_rxq_notification(be->q[i].ctx.rx, /*enable=*/0);
+    }
+    for (i = be->num_queue_pairs; i < be->num_queues; i++) {
+        sring_txq_notification(be->q[i].ctx.tx, /*enable=*/0);
+    }
+
+    while (!be->stopflag) {
+        {
+            BpfhvBackendQueue *rxq = be->q + 0;
+            int notify = 0;
+
+            sring_rxq_push(be, rxq->ctx.rx, max_rx_pkt_size,
+                           vnet_hdr_len, /*can_receive=*/NULL, &notify);
+            if (notify) {
+                eventfd_signal(rxq->irqfd);
+                if (unlikely(very_verbose)) {
+                    printf("Interrupt on %s\n", rxq->name);
+                }
+            }
+            if (unlikely(very_verbose)) {
+                sring_rxq_dump(rxq->ctx.rx);
+            }
+        }
+
+        for (i = be->num_queue_pairs; i < be->num_queues; i++) {
+            BpfhvBackendQueue *txq = be->q + i;
+            int notify = 0;
+
+            sring_txq_drain(be, txq->ctx.tx, vnet_hdr_len, &notify);
+            if (notify) {
+                eventfd_signal(txq->irqfd);
+                if (unlikely(very_verbose)) {
+                    printf("Interrupt on %s\n", txq->name);
+                }
+            }
+            if (unlikely(very_verbose)) {
+                sring_txq_dump(txq->ctx.tx);
+            }
+        }
+    }
+}
+
+static void *
+process_packets(void *opaque)
+{
+    BpfhvBackend *be = opaque;
+    size_t max_rx_pkt_size;
+
+    if (verbose) {
+        printf("Thread started\n");
+    }
+
+    if (be->features_sel &
+        (BPFHV_F_TCPv4_LRO | BPFHV_F_TCPv6_LRO | BPFHV_F_UDP_LRO)) {
+        max_rx_pkt_size = 65536;
+    } else {
+        max_rx_pkt_size = 1518;
+    }
+
+    if (be->busy_wait) {
+        process_packets_spin(be, max_rx_pkt_size);
+    } else {
+        process_packets_poll(be, max_rx_pkt_size);
+    }
 
     return NULL;
 }
@@ -686,10 +765,19 @@ main_loop(BpfhvBackend *be)
         fprintf(stderr, "eventfd() failed: %s\n", strerror(errno));
         return -1;
     }
+    be->stopflag = 0;
+
+    ret = fcntl(be->stopfd, F_SETFL, O_NONBLOCK);
+    if (ret) {
+        fprintf(stderr, "fcntl(stopfd, F_SETFL) failed: %s\n",
+                strerror(errno));
+        return -1;
+    }
 
     ret = fcntl(be->tapfd, F_SETFL, O_NONBLOCK);
     if (ret) {
-        fprintf(stderr, "fcntl(tapfd, F_SETFL) failed: %s\n", strerror(errno));
+        fprintf(stderr, "fcntl(tapfd, F_SETFL) failed: %s\n",
+                strerror(errno));
         return -1;
     }
 
@@ -1158,6 +1246,8 @@ main_loop(BpfhvBackend *be)
 
             /* Notify the worker thread and join it. */
             eventfd_signal(be->stopfd);
+            ACCESS_ONCE(be->stopflag) = 1;
+            __atomic_thread_fence(__ATOMIC_RELEASE);
             ret = pthread_join(be->th, NULL);
             if (ret) {
                 fprintf(stderr, "pthread_join() failed: %s\n",
@@ -1314,6 +1404,7 @@ usage(const char *progname)
            "    -f EBPF_PROGS_PATH\n"
            "    -C (enable checksum offloads)\n"
            "    -G (enable TCP/UDP GSO offloads)\n"
+           "    -B (run in busy-wait mode)\n"
            "    -v (increase verbosity level)\n",
             progname);
 }
@@ -1332,8 +1423,9 @@ main(int argc, char **argv)
     int ret;
 
     be.progfile = "proxy/sring_progs.o";
+    be.busy_wait = 0;
 
-    while ((opt = getopt(argc, argv, "hp:f:t:CGv")) != -1) {
+    while ((opt = getopt(argc, argv, "hp:f:t:CGBv")) != -1) {
         switch (opt) {
         case 'h':
             usage(argv[0]);
@@ -1361,6 +1453,10 @@ main(int argc, char **argv)
 
         case 'G':
             gso = csum = 1;
+            break;
+
+        case 'B':
+            be.busy_wait = 1;
             break;
         }
     }
