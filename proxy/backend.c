@@ -304,20 +304,26 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
     struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
     uint32_t prod = ACCESS_ONCE(priv->prod);
     uint32_t cons = priv->cons;
-    struct iovec iov[BPFHV_MAX_TX_BUFS];
+    struct iovec iov[BPFHV_MAX_RX_BUFS+1];
     int count;
 
     *can_receive = 1;
 
     for (count = 0;; count++) {
+        struct virtio_net_hdr_v1 hdr;
         uint32_t cons_first = cons;
         struct sring_rx_desc *rxd;
-        size_t totsize = 0;
+        size_t iovsize = 0;
         int iovcnt = 0;
         int ret;
 
         /* Collect enough receive descriptors to make room for a maximum
-         * sized packet. */
+         * sized packet, plus virtio-net header, if needed. */
+        if (vnet_hdr_len != 0) {
+            iov[0].iov_base = &hdr;
+            iov[0].iov_len = sizeof(hdr);
+            iovcnt = 1;
+        }
         do {
             if (unlikely(cons == prod)) {
                 /* We ran out of RX descriptors. Enable RX kicks and double
@@ -346,11 +352,11 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
                 }
             } else {
                 iov[iovcnt].iov_len = rxd->len;
-                totsize += rxd->len;
+                iovsize += rxd->len;
                 iovcnt++;
             }
             cons++;
-        } while (totsize < max_pkt_size && iovcnt < BPFHV_MAX_TX_BUFS);
+        } while (iovsize < max_pkt_size && iovcnt < BPFHV_MAX_TX_BUFS);
 
         /* Read into the scatter-gather buffer referenced by the collected
          * descriptors. */
@@ -378,7 +384,24 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
             rxd->len = (rxd->len <= ret) ? rxd->len : ret;
             ret -= rxd->len;
         }
-        rxd->flags |= SRING_DESC_F_EOP;
+        /* Complete the last descriptor. */
+        rxd->flags = SRING_DESC_F_EOP;
+        if (vnet_hdr_len != 0) {
+#if 0
+            printf("rx hdr: {fl %x, cs %u, co %u, hl %u, gs %u, "
+                    "gt %u}\n",
+                    hdr.flags, hdr.csum_start, hdr.csum_offset,
+                    hdr.hdr_len, hdr.gso_size, hdr.gso_type);
+#endif
+            rxd->csum_start = hdr.csum_start;
+            rxd->csum_offset = hdr.csum_offset;
+            rxd->hdr_len = hdr.hdr_len;
+            rxd->gso_size = hdr.gso_size;
+            rxd->gso_type = hdr.gso_type;
+            if (hdr.flags & VIRTIO_NET_HDR_F_NEEDS_CSUM) {
+                rxd->flags |= SRING_DESC_F_NEEDS_CSUM;
+            }
+        }
     }
 
 out:
@@ -396,7 +419,7 @@ sring_txq_drain(BpfhvBackend *be,
                 int vnet_hdr_len, int *notify)
 {
     struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
-    struct iovec iov[BPFHV_MAX_TX_BUFS];
+    struct iovec iov[BPFHV_MAX_TX_BUFS+1];
     uint32_t prod = ACCESS_ONCE(priv->prod);
     uint32_t cons = priv->cons;
     uint32_t first = cons;
