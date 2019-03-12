@@ -728,6 +728,24 @@ backend_ready(BpfhvBackend *be)
            num_bufs_valid(be->num_tx_bufs) && be->num_regions > 0;
 }
 
+static void
+backend_drain(BpfhvBackend *be)
+{
+    unsigned int i;
+
+    /* Drain any pending transmit buffers. */
+    for (i = be->num_queue_pairs; i < be->num_queues; i++) {
+        BpfhvBackendQueue *txq = be->q + i;
+        int notify = 0;
+        int count;
+
+        count = sring_txq_drain(be, txq->ctx.tx, be->vnet_hdr_len, &notify);
+        if (verbose && count > 0) {
+            printf("Drained %d packets from %s\n", count, txq->name);
+        }
+    }
+}
+
 /* Helper function to stop the packet processing thread and join it. */
 static int
 backend_stop(BpfhvBackend *be)
@@ -756,6 +774,7 @@ sigint_handler(int signum)
             printf("Running backend interrupted\n");
         }
         backend_stop(&be);
+        backend_drain(&be);
     }
     exit(EXIT_SUCCESS);
 }
@@ -1273,6 +1292,9 @@ main_loop(BpfhvBackend *be)
             if (ret) {
                 break;
             }
+
+            /* Drain any remaining packets. */
+            backend_drain(be);
             if (verbose) {
                 printf("Backend stops processing\n");
             }
