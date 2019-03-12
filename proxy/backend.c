@@ -1412,7 +1412,7 @@ main(int argc, char **argv)
     be.cfd = cfd;
     be.features_avail = BPFHV_F_SG;
     if (csum) {
-        be.features_avail |= BPFHV_F_TX_CSUM | BPFHV_F_TX_CSUM;
+        be.features_avail |= BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM;
         if (gso) {
             be.features_avail |= BPFHV_F_TSOv4 | BPFHV_F_TCPv4_LRO
                               |  BPFHV_F_TSOv6 | BPFHV_F_TCPv6_LRO
