@@ -668,11 +668,11 @@ main_loop(BpfhvBackend *be)
         BpfhvProxyMessage resp = { };
 
         /* Variables to store recvmsg() ancillary data. */
-        int fds[BPFHV_PROXY_MAX_REGIONS];
+        int fds[BPFHV_PROXY_MAX_REGIONS] = { };
         size_t num_fds = 0;
 
         /* Variables to store sendmsg() ancillary data. */
-        int outfds[BPFHV_PROXY_MAX_REGIONS];
+        int outfds[BPFHV_PROXY_MAX_REGIONS] = { };
         size_t num_outfds = 0;
 
         /* Support variables for reading a bpfhv-proxy message header. */
@@ -1237,6 +1237,7 @@ tap_alloc(const char *ifname, int vnet_hdr_len, int csum, int gso)
         ifr.ifr_flags |= IFF_VNET_HDR;
     }
     strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
+    ifr.ifr_name[IFNAMSIZ-1] = '\0';
 
     /* Try to create the device. */
     err = ioctl(fd, TUNSETIFF, (void *)&ifr);
