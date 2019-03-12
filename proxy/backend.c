@@ -505,16 +505,22 @@ process_packets(void *opaque)
     int very_verbose = (verbose >= 2);
     struct pollfd *pfd_stop;
     struct pollfd *pfd_tap;
+    size_t max_rx_pkt_size;
     struct pollfd *pfd;
     unsigned int nfds;
     int can_receive;
     unsigned int i;
-    size_t max_pkt_size = 1518;
 
     if (verbose) {
         printf("Thread started\n");
     }
 
+    if (be->features_avail &
+        (BPFHV_F_TCPv4_LRO | BPFHV_F_TCPv6_LRO | BPFHV_F_UDP_LRO)) {
+        max_rx_pkt_size = 65536;
+    } else {
+        max_rx_pkt_size = 1518;
+    }
     nfds = be->num_queues + 2;
     pfd = calloc(nfds, sizeof(pfd[0]));
     assert(pfd != NULL);
@@ -591,7 +597,7 @@ process_packets(void *opaque)
             BpfhvBackendQueue *rxq = be->q + 0;
             int notify = 0;
 
-            sring_rxq_push(be, rxq->ctx.rx, max_pkt_size,
+            sring_rxq_push(be, rxq->ctx.rx, max_rx_pkt_size,
                            vnet_hdr_len, &can_receive, &notify);
             if (notify) {
                 eventfd_signal(rxq->irqfd);
