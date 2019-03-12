@@ -238,7 +238,8 @@ struct virtio_net_hdr_v1 {
     uint16_t num_buffers; /* Number of merged rx buffers */
 };
 
-#define BPFHV_HV_TX_BUDGET      64
+#define BPFHV_BE_TX_BUDGET      64
+#define BPFHV_BE_RX_BUDGET      64
 
 static void
 sring_rxq_notification(struct bpfhv_rx_context *ctx, int enable)
@@ -295,7 +296,7 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
     struct iovec iov[BPFHV_MAX_RX_BUFS+1];
     int count;
 
-    for (count = 0;; count++) {
+    for (count = 0; count < BPFHV_BE_RX_BUDGET; count++) {
         struct virtio_net_hdr_v1 hdr;
         uint32_t cons_first = cons;
         struct sring_rx_desc *rxd;
@@ -473,7 +474,7 @@ sring_txq_drain(BpfhvBackend *be,
                 break;
             }
 
-            if (++count >= BPFHV_HV_TX_BUDGET) {
+            if (++count >= BPFHV_BE_TX_BUDGET) {
                 break;
             }
 
@@ -622,7 +623,9 @@ process_packets_spin(BpfhvBackend *be, size_t max_rx_pkt_size)
         sring_txq_notification(be->q[i].ctx.tx, /*enable=*/0);
     }
 
-    while (!be->stopflag) {
+    while (ACCESS_ONCE(be->stopflag) == 0) {
+        /* Read packets from the TAP interface into the first receive
+         * queue. */
         {
             BpfhvBackendQueue *rxq = be->q + 0;
             int notify = 0;
@@ -640,6 +643,8 @@ process_packets_spin(BpfhvBackend *be, size_t max_rx_pkt_size)
             }
         }
 
+        /* Drain the packets from the transmit queues, sending them
+         * to the TAP interface. */
         for (i = be->num_queue_pairs; i < be->num_queues; i++) {
             BpfhvBackendQueue *txq = be->q + i;
             int notify = 0;
