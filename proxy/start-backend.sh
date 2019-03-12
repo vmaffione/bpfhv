@@ -12,6 +12,12 @@ trap 'sigint' INT
 
 set -x
 sudo ip tuntap add mode tap name $IF
+# Re-use the same MAC address (rather than a random address)
+# so that the guest ARP table remains valid across multiple
+# executions of this script (e.g. to restart the backend).
+HSH=$(echo $IF | md5sum | awk '{print $1}')
+HSH=${HSH:0:2}
+sudo ip link set $IF address be:c7:54:8a:13:${HSH}
 sudo ip link set $IF up
 sudo ip addr add $IPADDR dev $IF
 sudo proxy/backend -p $SOCK -t $IF -v $@
