@@ -500,6 +500,7 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
     int very_verbose = (verbose >= 2);
     struct pollfd *pfd_stop;
     struct pollfd *pfd_tap;
+    int poll_timeout = -1;
     struct pollfd *pfd;
     unsigned int nfds;
     int can_receive;
@@ -532,57 +533,22 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
          * can actually receive packets. */
         pfd_tap->events = can_receive ? POLLIN : 0;
 
-        n = poll(pfd, nfds, -1);
-        if (unlikely(n <= 0)) {
-            assert(n < 0);
+        n = poll(pfd, nfds, poll_timeout);
+        if (unlikely(n < 0)) {
             fprintf(stderr, "poll() failed: %s\n", strerror(errno));
             break;
         }
+        poll_timeout = -1;
 
-        /* Drain RXQ kickfds if needed. */
-        for (i = 0; i < be->num_queue_pairs; i++) {
-            BpfhvBackendQueue *rxq = be->q + i;
-
-            if (pfd[i].revents & POLLIN) {
-                if (unlikely(very_verbose)) {
-                    printf("Kick on %s\n", rxq->name);
-                }
-                eventfd_drain(pfd[i].fd);
-                can_receive = 1;  /* assume we can receive now */
-            }
-        }
-
-        /* Process TX kicks by draining the corresponding TX queues. */
-        for (; i < be->num_queues; i++) {
-            if (pfd[i].revents & POLLIN) {
-                BpfhvBackendQueue *txq = be->q + i;
-                int notify = 0;
-
-                if (unlikely(very_verbose)) {
-                    printf("Kick on %s\n", txq->name);
-                }
-                sring_txq_drain(be, txq->ctx.tx, vnet_hdr_len, &notify);
-                if (notify) {
-                    eventfd_signal(txq->irqfd);
-                    if (unlikely(very_verbose)) {
-                        printf("Interrupt on %s\n", txq->name);
-                    }
-                }
-                if (unlikely(very_verbose)) {
-                    sring_txq_dump(txq->ctx.tx);
-                }
-                eventfd_drain(pfd[i].fd);
-            }
-        }
-
-        /* Receive packets from the TAP interface and push them to
+        /* Receive any packets from the TAP interface and push them to
          * the first (and unique) RXQ. */
-        if (pfd_tap->revents & POLLIN) {
+        {
             BpfhvBackendQueue *rxq = be->q + 0;
             int notify = 0;
+            int count;
 
             can_receive = 1;
-            sring_rxq_push(be, rxq->ctx.rx, max_rx_pkt_size,
+            count = sring_rxq_push(be, rxq->ctx.rx, max_rx_pkt_size,
                            vnet_hdr_len, &can_receive, &notify);
             if (notify) {
                 eventfd_signal(rxq->irqfd);
@@ -590,8 +556,46 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
                     printf("Interrupt on %s\n", rxq->name);
                 }
             }
-            if (unlikely(very_verbose)) {
+            if (count >= BPFHV_BE_RX_BUDGET) {
+                /* Out of budget. Make sure next poll() does not block,
+                 * so that we can keep processing. */
+                poll_timeout = 0;
+            }
+            if (unlikely(very_verbose && count > 0)) {
                 sring_rxq_dump(rxq->ctx.rx);
+            }
+        }
+
+        /* Drain any packets from the transmit queues. */
+        for (i = be->num_queue_pairs; i < be->num_queues; i++) {
+            BpfhvBackendQueue *txq = be->q + i;
+            int notify = 0;
+            int count;
+
+            count = sring_txq_drain(be, txq->ctx.tx, vnet_hdr_len, &notify);
+            if (notify) {
+                eventfd_signal(txq->irqfd);
+                if (unlikely(very_verbose)) {
+                    printf("Interrupt on %s\n", txq->name);
+                }
+            }
+            if (count >= BPFHV_BE_TX_BUDGET) {
+                /* Out of budget. Make sure next poll() does not block,
+                 * so that we can keep processing. */
+                poll_timeout = 0;
+            }
+            if (unlikely(very_verbose && count > 0)) {
+                sring_txq_dump(txq->ctx.tx);
+            }
+        }
+
+        /* Drain transmit and receive kickfds if needed. */
+        for (i = 0; i < be->num_queues; i++) {
+            if (pfd[i].revents & POLLIN) {
+                if (unlikely(very_verbose)) {
+                    printf("Kick on %s\n", be->q[i].name);
+                }
+                eventfd_drain(pfd[i].fd);
             }
         }
 

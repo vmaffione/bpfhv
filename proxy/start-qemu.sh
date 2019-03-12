@@ -20,8 +20,9 @@
 
 IMG="${1:-/home/vmaffione/git/vm/netmap.qcow2}"
 SOCK=/var/run/vm20-20.socket
+NOGRAPHIC=-nographic
 sudo qemu-system-x86_64 ${IMG} \
-        -enable-kvm -smp 2 -m 512M -vga std \
+        -enable-kvm -smp 2 -m 512M -vga std ${NOGRAPHIC} \
         -device e1000,netdev=mgmt,mac=00:AA:BB:CC:0a:99 \
         -netdev user,id=mgmt,hostfwd=tcp::20020-:22 \
         -numa node,memdev=mem0 \
