@@ -244,7 +244,7 @@ struct virtio_net_hdr_v1 {
 #define BPFHV_BE_TX_BUDGET      64
 #define BPFHV_BE_RX_BUDGET      64
 
-static void
+static inline void
 sring_rxq_notification(struct bpfhv_rx_context *ctx, int enable)
 {
     struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
@@ -255,7 +255,7 @@ sring_rxq_notification(struct bpfhv_rx_context *ctx, int enable)
     }
 }
 
-static void
+static inline void
 sring_txq_notification(struct bpfhv_tx_context *ctx, int enable)
 {
     struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
@@ -264,6 +264,14 @@ sring_txq_notification(struct bpfhv_tx_context *ctx, int enable)
     if (enable) {
         __atomic_thread_fence(__ATOMIC_ACQUIRE);
     }
+}
+
+static inline int
+sring_txq_pending(struct bpfhv_tx_context *ctx)
+{
+    struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
+
+    return priv->cons != ACCESS_ONCE(priv->prod);
 }
 
 static void
@@ -528,6 +536,10 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
     pfd_stop->events = POLLIN;
     can_receive = can_send = 1;
 
+    /* Start with guest-->host notifications enabled. */
+    for (i = 0; i < be->num_queue_pairs; i++) {
+        sring_rxq_notification(be->q[i].ctx.rx, /*enable=*/1);
+    }
     for (i = be->num_queue_pairs; i < be->num_queues; i++) {
         sring_txq_notification(be->q[i].ctx.tx, /*enable=*/1);
     }
@@ -582,11 +594,14 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
         /* Drain any packets from the transmit queues. */
         for (i = be->num_queue_pairs; i < be->num_queues; i++) {
             BpfhvBackendQueue *txq = be->q + i;
+            struct bpfhv_tx_context *ctx = txq->ctx.tx;
             int notify = 0;
             size_t count;
 
+            /* Disable further kicks and start processing. */
+            sring_txq_notification(ctx, /*enable=*/0);
             can_send = 1;
-            count = sring_txq_drain(be, txq->ctx.tx, vnet_hdr_len,
+            count = sring_txq_drain(be, ctx, vnet_hdr_len,
                                     &can_send, &notify);
             if (notify) {
                 eventfd_signal(txq->irqfd);
@@ -596,11 +611,21 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
             }
             if (count >= BPFHV_BE_TX_BUDGET) {
                 /* Out of budget. Make sure next poll() does not block,
-                 * so that we can keep processing. */
+                 * so that we can keep processing in the next iteration. */
                 poll_timeout = 0;
+            } else {
+                /* Re-enable notifications and double check for
+                 * more work. */
+                sring_txq_notification(ctx, /*enable=*/1);
+                if (unlikely(sring_txq_pending(ctx))) {
+                    /* More work found. We will process it in the
+                     * next iteration. */
+                    sring_txq_notification(ctx, /*enable=*/0);
+                    poll_timeout = 0;
+                }
             }
             if (unlikely(very_verbose && count > 0)) {
-                sring_txq_dump(txq->ctx.tx);
+                sring_txq_dump(ctx);
             }
         }
 
