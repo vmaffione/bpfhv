@@ -63,6 +63,9 @@ typedef struct BpfhvBackendQueue {
 
 /* Main data structure supporting a single bpfhv vNIC. */
 typedef struct BpfhvBackend {
+    /* A file containing the PID of this process. */
+    const char *pidfile;
+
     /* File descriptor of the TAP device (the real net backend). */
     int tapfd;
 
@@ -798,6 +801,9 @@ sigint_handler(int signum)
         backend_stop(&be);
         backend_drain(&be);
     }
+    if (be.pidfile != NULL) {
+        unlink(be.pidfile);
+    }
     exit(EXIT_SUCCESS);
 }
 
@@ -1462,6 +1468,7 @@ usage(const char *progname)
     printf("%s:\n"
            "    -h (show this help and exit)\n"
            "    -p UNIX_SOCKET_PATH\n"
+           "    -P PID_FILE\n"
            "    -t TAP_NAME\n"
            "    -f EBPF_PROGS_PATH\n"
            "    -C (enable checksum offloads)\n"
@@ -1484,10 +1491,11 @@ main(int argc, char **argv)
     int cfd;
     int ret;
 
+    be.pidfile = NULL;
     be.progfile = "proxy/sring_progs.o";
     be.busy_wait = 0;
 
-    while ((opt = getopt(argc, argv, "hp:f:t:CGBv")) != -1) {
+    while ((opt = getopt(argc, argv, "hp:P:f:t:CGBv")) != -1) {
         switch (opt) {
         case 'h':
             usage(argv[0]);
@@ -1495,6 +1503,10 @@ main(int argc, char **argv)
 
         case 'p':
             path = optarg;
+            break;
+
+        case 'P':
+            be.pidfile = optarg;
             break;
 
         case 'f':
@@ -1530,6 +1542,19 @@ main(int argc, char **argv)
     }
 
     assert(sizeof(struct virtio_net_hdr_v1) == 12);
+
+    if (be.pidfile != NULL) {
+        FILE *f = fopen(be.pidfile, "w");
+
+        if (f == NULL) {
+            fprintf(stderr, "Failed to open pidfile: %s\n", strerror(errno));
+            return -1;
+        }
+
+        fprintf(f, "%d", (int)getpid());
+        fflush(f);
+        fclose(f);
+    }
 
     /* Set some signal handler for graceful termination. */
     sa.sa_handler = sigint_handler;
@@ -1583,6 +1608,9 @@ main(int argc, char **argv)
     ret = main_loop(&be);
     close(cfd);
     close(be.tapfd);
+    if (be.pidfile != NULL) {
+        unlink(be.pidfile);
+    }
 
     return ret;
 }
