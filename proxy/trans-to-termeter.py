@@ -18,6 +18,7 @@ if args.num_metrics < 1:
 fmtstr = '%s ' * (args.num_metrics)
 fmtstr.strip()
 header = True
+last_time = 0.0
 
 try:
     mcnt = 0
@@ -40,6 +41,11 @@ try:
                 print(fmtstr % tuple(metrics))
         mcnt += 1
         if mcnt == args.num_metrics:
+            # Samples are counters, so we need to compute the rate.
+            time = float(tokens[0])
+            for i in range(len(values)):
+                values[i] = values[i] / (time-last_time)
+            last_time = time
             mcnt = 0
             print(fmtstr % tuple(values))
             sys.stdout.flush()
