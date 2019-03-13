@@ -307,6 +307,8 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
     struct iovec iov[BPFHV_MAX_RX_BUFS+1];
     int count;
 
+    __atomic_thread_fence(__ATOMIC_ACQUIRE); /* read from priv->prod */
+
     for (count = 0; count < BPFHV_BE_RX_BUDGET; count++) {
         struct virtio_net_hdr_v1 hdr;
         uint32_t cons_first = cons;
@@ -332,6 +334,7 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
                 }
                 sring_rxq_notification(ctx, /*enable=*/1);
                 prod = ACCESS_ONCE(priv->prod);
+                __atomic_thread_fence(__ATOMIC_ACQUIRE);
                 if (cons == prod) {
                     /* Not enough space. We need to rewind to the first unused
                      * descriptor and stop. */
@@ -431,6 +434,8 @@ sring_txq_drain(BpfhvBackend *be, struct bpfhv_tx_context *ctx,
     int iovcnt = iovcnt_start;
     int count = 0;
 
+    __atomic_thread_fence(__ATOMIC_ACQUIRE); /* read from priv->prod */
+
     while (cons != prod) {
         struct sring_tx_desc *txd = priv->desc + (cons & priv->qmask);
 
@@ -493,6 +498,14 @@ sring_txq_drain(BpfhvBackend *be, struct bpfhv_tx_context *ctx,
 
             iovcnt = iovcnt_start;
             first = cons;
+        }
+
+        if (unlikely(cons == prod)) {
+            /* Before stopping, check if more work came while we were
+             * not looking at priv->prod. Note that double-check logic
+             * is done by the caller. */
+            prod = ACCESS_ONCE(priv->prod);
+            __atomic_thread_fence(__ATOMIC_ACQUIRE);
         }
     }
 
