@@ -5,8 +5,10 @@ IPADDR=10.0.0.10/24
 SOCK=/var/run/vm20-20.socket
 
 sigint() {
+    echo "$0 interrupted"
     sudo ip link set $IF down
     sudo ip link del $IF
+    exit 0
 }
 trap 'sigint' INT
 
