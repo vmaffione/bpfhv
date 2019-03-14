@@ -500,10 +500,13 @@ sring_txq_drain(BpfhvBackend *be, struct bpfhv_tx_context *ctx,
                 /* Backend is blocked (or failed), so we need to stop.
                  * The last packet was not transmitted, so we need to
                  * rewind 'cons'. */
-                if (ret == 0 && can_send != NULL) {
-                    *can_send = 0;
-                } else if (ret < 0 && verbose) {
-                    fprintf(stderr, "Transmit failure: %s\n", strerror(errno));
+                if (ret < 0) {
+                    if (can_send != NULL && errno == EAGAIN) {
+                        *can_send = 0;
+                    } else if (verbose) {
+                        fprintf(stderr, "writev(tapfd) failed: %s\n",
+                                strerror(errno));
+                    }
                 }
                 cons = first;
                 break;
