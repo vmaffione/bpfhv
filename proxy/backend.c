@@ -122,6 +122,11 @@ typedef struct BpfhvBackend {
     BpfhvBackendQueue q[BPFHV_MAX_QUEUES];
 } BpfhvBackend;
 
+#define RXI_BEGIN(_s)   0
+#define RXI_END(_s)     (_s)->num_queue_pairs
+#define TXI_BEGIN(_s)   (_s)->num_queue_pairs
+#define TXI_END(_s)     (_s)->num_queues
+
 /* Main data structure. */
 static BpfhvBackend be;
 
@@ -564,10 +569,10 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
     can_receive = can_send = 1;
 
     /* Start with guest-->host notifications enabled. */
-    for (i = 0; i < be->num_queue_pairs; i++) {
+    for (i = RXI_BEGIN(be); i < RXI_END(be); i++) {
         sring_rxq_notification(be->q[i].ctx.rx, /*enable=*/1);
     }
-    for (i = be->num_queue_pairs; i < be->num_queues; i++) {
+    for (i = TXI_BEGIN(be); i < TXI_END(be); i++) {
         sring_txq_notification(be->q[i].ctx.tx, /*enable=*/1);
     }
 
@@ -619,7 +624,7 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
         }
 
         /* Drain any packets from the transmit queues. */
-        for (i = be->num_queue_pairs; i < be->num_queues; i++) {
+        for (i = TXI_BEGIN(be); i < TXI_END(be); i++) {
             BpfhvBackendQueue *txq = be->q + i;
             struct bpfhv_tx_context *ctx = txq->ctx.tx;
             int notify = 0;
@@ -687,10 +692,10 @@ process_packets_spin(BpfhvBackend *be, size_t max_rx_pkt_size)
     unsigned int i;
 
     /* Disable all guest-->host notifications. */
-    for (i = 0; i < be->num_queue_pairs; i++) {
+    for (i = RXI_BEGIN(be); i < RXI_END(be); i++) {
         sring_rxq_notification(be->q[i].ctx.rx, /*enable=*/0);
     }
-    for (i = be->num_queue_pairs; i < be->num_queues; i++) {
+    for (i = TXI_BEGIN(be); i < TXI_END(be); i++) {
         sring_txq_notification(be->q[i].ctx.tx, /*enable=*/0);
     }
 
@@ -716,7 +721,7 @@ process_packets_spin(BpfhvBackend *be, size_t max_rx_pkt_size)
 
         /* Drain the packets from the transmit queues, sending them
          * to the TAP interface. */
-        for (i = be->num_queue_pairs; i < be->num_queues; i++) {
+        for (i = TXI_BEGIN(be); i < TXI_END(be); i++) {
             BpfhvBackendQueue *txq = be->q + i;
             int notify = 0;
 
@@ -802,7 +807,7 @@ backend_drain(BpfhvBackend *be)
     unsigned int i;
 
     /* Drain any pending transmit buffers. */
-    for (i = be->num_queue_pairs; i < be->num_queues; i++) {
+    for (i = TXI_BEGIN(be); i < TXI_END(be); i++) {
         BpfhvBackendQueue *txq = be->q + i;
         size_t drained = 0;
         int notify = 0;
@@ -1094,11 +1099,11 @@ main_loop(BpfhvBackend *be)
                 resp.payload.ctx_sizes.tx_ctx_size =
                     sring_tx_ctx_size(be->num_tx_bufs);
 
-                for (i = 0; i < be->num_queue_pairs; i++) {
+                for (i = RXI_BEGIN(be); i < RXI_END(be); i++) {
                     snprintf(be->q[i].name, sizeof(be->q[i].name),
                              "RX%u", i);
                 }
-                for (i = be->num_queue_pairs; i < be->num_queues; i++) {
+                for (i = TXI_BEGIN(be); i < TXI_END(be); i++) {
                     snprintf(be->q[i].name, sizeof(be->q[i].name),
                              "TX%u", i-be->num_queue_pairs);
                 }
