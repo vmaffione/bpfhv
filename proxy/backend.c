@@ -375,10 +375,13 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
         /* Read into the scatter-gather buffer referenced by the collected
          * descriptors. */
         pktsize = readv(be->tapfd, iov, iovcnt);
-        if (pktsize <= 0 && errno == EAGAIN) {
-            /* No more data to read. We need to rewind to the first unused
-             * descriptor and stop. */
+        if (pktsize <= 0) {
+            /* No more data to read (or error). We need to rewind to the
+             * first unused descriptor and stop. */
             cons = cons_first;
+            if (unlikely(pktsize < 0 && errno != EAGAIN)) {
+                fprintf(stderr, "readv(tapfd) failed: %s\n", strerror(errno));
+            }
             break;
         }
 #if 0
