@@ -337,6 +337,7 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
                  * bail out. Otherwise we enable RX kicks and double check for
                  * more available descriptors. */
                 if (can_receive == NULL) {
+                    cons = cons_first;
                     goto out;
                 }
                 sring_rxq_notification(ctx, /*enable=*/1);
