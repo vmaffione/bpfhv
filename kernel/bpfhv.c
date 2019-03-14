@@ -727,9 +727,16 @@ BPF_CALL_1(bpf_hv_rx_pkt_alloc, struct bpfhv_rx_context *, ctx)
 		if (i != 0) {
 			/* A fragment after the first one. */
 			int offset = kbuf - page_address(page);
+			unsigned int nr_frags = skb_shinfo(skb)->nr_frags;
 
-			skb_add_rx_frag(skb, skb_shinfo(skb)->nr_frags, page,
-					offset, rxb->len, truesize);
+			if (unlikely(nr_frags >= MAX_SKB_FRAGS)) {
+				/* TODO Allocate a new skb and chain
+				 * it to the last one. */
+				put_page(page);
+			} else {
+				skb_add_rx_frag(skb, nr_frags, page, offset,
+						rxb->len, truesize);
+			}
 		} else if (lro) {
 			/* First fragment of a packet in LRO mode. */
 			size_t copy = rxb->len;
