@@ -416,9 +416,12 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
 
 out:
     if (count > 0) {
+        /* Barrier between store(sring entries) and store(priv->cons). */
         __atomic_thread_fence(__ATOMIC_RELEASE);
         priv->cons = cons;
-        __atomic_thread_fence(__ATOMIC_RELEASE);
+        /* Full memory barrier to ensure store(priv->cons) happens before
+         * load(priv->intr_enabled). See the double-check in sring_rxi().*/
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
         *notify = ACCESS_ONCE(priv->intr_enabled);
     }
 
@@ -518,9 +521,12 @@ sring_txq_drain(BpfhvBackend *be, struct bpfhv_tx_context *ctx,
     }
 
     if (count > 0) {
+        /* Barrier between stores to sring entries and store to priv->cons. */
         __atomic_thread_fence(__ATOMIC_RELEASE);
         priv->cons = cons;
-        __atomic_thread_fence(__ATOMIC_RELEASE);
+        /* Full memory barrier to ensure store(priv->cons) happens before
+         * load(priv->intr_enabled). See the double-check in sring_txi(). */
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
         *notify = ACCESS_ONCE(priv->intr_enabled);
     }
 
