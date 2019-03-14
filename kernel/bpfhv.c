@@ -479,33 +479,38 @@ bpfhv_features_init(struct bpfhv_info *bi)
 	writel(features, bi->regaddr + BPFHV_REG_FEATURES);
 	netdev->needed_headroom = 0;
 	bi->lro = false;
+	/* The netdev->features field contains the features
+	 * that are currently active in the the device. */
 	netdev->features = NETIF_F_HIGHDMA;
-	netdev->hw_features = 0;
 	if (features & BPFHV_F_SG) {
 		netdev->features |= NETIF_F_SG;
-		netdev->hw_features |= NETIF_F_SG;
 	}
 	if (features & BPFHV_F_TX_CSUM) {
-		netdev->hw_features |= NETIF_F_HW_CSUM;
 		netdev->features |= NETIF_F_HW_CSUM;
 		if (features & BPFHV_F_TSOv4) {
-			netdev->hw_features |= NETIF_F_TSO;
+			netdev->features |= NETIF_F_TSO;
 		}
 		if (features & BPFHV_F_TSOv6) {
-			netdev->hw_features |= NETIF_F_TSO6;
+			netdev->features |= NETIF_F_TSO6;
 		}
 		netdev->features |= NETIF_F_GSO_ROBUST;
-		netdev->features |= netdev->hw_features & NETIF_F_ALL_TSO;
 	}
 	if (features & BPFHV_F_RX_CSUM) {
 		netdev->features |= NETIF_F_RXCSUM;
 	}
 	if (features & (BPFHV_F_TCPv4_LRO | BPFHV_F_TCPv6_LRO)) {
-		netdev->hw_features |= NETIF_F_LRO;
 		netdev->features |= NETIF_F_LRO;
 		bi->lro = true;
 	}
 	netdev->vlan_features = netdev->features;
+
+	/* The netdev->hw_features field contains the features
+	 * that the device can potentially support, and that can
+	 * therefore be changed by the user. In our case the
+	 * hypervisor can change arbitrarily, so any feature could
+	 * be supported. */
+	netdev->hw_features = NETIF_F_SG | NETIF_F_HW_CSUM
+			| NETIF_F_TSO | NETIF_F_TSO6 | NETIF_F_LRO;
 }
 
 static int bpfhv_irqs_setup(struct bpfhv_info *bi)
