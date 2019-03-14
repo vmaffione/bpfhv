@@ -10,6 +10,10 @@
 
 #define ACCESS_ONCE(x) (*(volatile typeof(x) *)&(x))
 #define compiler_barrier() __asm__ __volatile__ ("");
+#define smp_mb_release()    compiler_barrier()
+#define smp_mb_acquire()    compiler_barrier()
+/* TODO mfence needed on x86.. */
+#define smp_mb_full()       compiler_barrier()
 
 #if defined(WITH_CSUM) || defined(WITH_GSO)
 /* Imported from Linux (include/uapi/linux/virtio_net.h). */
@@ -85,9 +89,13 @@ int sring_txp(struct bpfhv_tx_context *ctx)
         txd->flags |= SRING_DESC_F_NEEDS_CSUM;
     }
 #endif
-    compiler_barrier();
+    /* Make sure stores to sring entries happen before store to priv->prod. */
+    smp_mb_release();
     ACCESS_ONCE(priv->prod) = prod;
-    compiler_barrier();
+    /* Full memory barrier to make sure store to priv->prod happens
+     * before load from priv->kick_enabled (see corresponding double-check
+     * in the hypervisor/backend TXQ drain routine). */
+    smp_mb_full();
     ctx->oflags = ACCESS_ONCE(priv->kick_enabled) ?
                   BPFHV_OFLAGS_NOTIF_NEEDED : 0;
 
@@ -130,7 +138,9 @@ int sring_txc(struct bpfhv_tx_context *ctx)
     if (clear == cons) {
         return 0;
     }
-    compiler_barrier();
+    /* Make sure load from priv->cons happen before load from sring
+     * entries in sring_tx_get_one(). */
+    smp_mb_acquire();
 
     priv->clear = sring_tx_get_one(ctx, priv, clear);
     ctx->oflags = 0;
@@ -148,7 +158,7 @@ int sring_txr(struct bpfhv_tx_context *ctx)
     if (cons == prod) {
         return 0;
     }
-    compiler_barrier();
+    smp_mb_acquire();
 
     ACCESS_ONCE(priv->cons) = priv->clear = sring_tx_get_one(ctx, priv, cons);
     ctx->oflags = 0;
@@ -171,7 +181,9 @@ int sring_txi(struct bpfhv_tx_context *ctx)
         return 1;
     }
     ACCESS_ONCE(priv->intr_enabled) = 1;
-    compiler_barrier();
+    /* Make sure store to priv->intr_enabled is visible before we
+     * load again from priv->cons. */
+    smp_mb_full();
     ncompl += ACCESS_ONCE(priv->cons) - cons;
     if (ncompl >= ctx->min_completed_bufs) {
         ACCESS_ONCE(priv->intr_enabled) = 0;
@@ -202,9 +214,14 @@ int sring_rxp(struct bpfhv_rx_context *ctx)
         rxd->len = rxb->len;
         rxd->flags = 0;
     }
-    compiler_barrier();
+
+    /* Make sure stores to sring entries happen before store to priv->prod. */
+    smp_mb_release();
     ACCESS_ONCE(priv->prod) = prod;
-    compiler_barrier();
+    /* Full memory barrier to make sure store to priv->prod happens
+     * before load from priv->kick_enabled (see corresponding double-check
+     * in the hypervisor/backend RXQ processing routine). */
+    smp_mb_full();
     ctx->oflags = ACCESS_ONCE(priv->kick_enabled) ?
                   BPFHV_OFLAGS_NOTIF_NEEDED : 0;
 
@@ -224,7 +241,9 @@ int sring_rxc(struct bpfhv_rx_context *ctx)
     if (clear == cons) {
         return 0;
     }
-    compiler_barrier();
+    /* Make sure load from priv->cons happen before load from sring
+     * entries. */
+    smp_mb_acquire();
 
     /* Prepare the input arguments for rx_pkt_alloc(). */
     for (i = 0; clear != cons && i < BPFHV_MAX_RX_BUFS;) {
@@ -288,7 +307,7 @@ int sring_rxr(struct bpfhv_rx_context *ctx)
     if (cons == prod) {
         return 0;
     }
-    compiler_barrier();
+    smp_mb_acquire();
 
     for (; cons != prod && i < BPFHV_MAX_RX_BUFS; i++) {
         struct bpfhv_rx_buf *rxb = ctx->bufs + i;
@@ -323,7 +342,9 @@ int sring_rxi(struct bpfhv_rx_context *ctx)
         return 1;
     }
     ACCESS_ONCE(priv->intr_enabled) = 1;
-    compiler_barrier();
+    /* Make sure store to priv->intr_enabled is visible before we
+     * load again from priv->cons. */
+    smp_mb_full();
     ncompl += ACCESS_ONCE(priv->cons) - cons;
     if (ncompl >= ctx->min_completed_bufs) {
         ACCESS_ONCE(priv->intr_enabled) = 0;
