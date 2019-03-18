@@ -892,6 +892,12 @@ BPF_CALL_4(bpf_hv_tx_buf_dma_unmap, struct bpfhv_tx_context *, ctx,
 	return 0;
 }
 
+BPF_CALL_0(bpf_hv_smp_mb_full)
+{
+	smp_mb();
+	return 0;
+}
+
 #undef PROGDUMP
 #ifdef PROGDUMP
 static void
@@ -1179,6 +1185,9 @@ bpfhv_helper_calls_fixup(struct bpfhv_info *bi, struct bpf_insn *insns,
 			break;
 		case BPFHV_FUNC_tx_buf_dma_unmap:
 			func = bpf_hv_tx_buf_dma_unmap;
+			break;
+		case BPFHV_FUNC_smp_mb_full:
+			func = bpf_hv_smp_mb_full;
 			break;
 		default:
 			netif_err(bi, drv, bi->netdev,

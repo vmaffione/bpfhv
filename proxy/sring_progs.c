@@ -8,13 +8,6 @@
    __attribute__((section(NAME), used))
 #endif
 
-#define ACCESS_ONCE(x) (*(volatile typeof(x) *)&(x))
-#define compiler_barrier() __asm__ __volatile__ ("");
-#define smp_mb_release()    compiler_barrier()
-#define smp_mb_acquire()    compiler_barrier()
-/* TODO mfence needed on x86.. */
-#define smp_mb_full()       compiler_barrier()
-
 #if defined(WITH_CSUM) || defined(WITH_GSO)
 /* Imported from Linux (include/uapi/linux/virtio_net.h). */
 struct virtio_net_hdr {
@@ -47,6 +40,13 @@ static int BPFHV_FUNC(pkt_virtio_net_md_get, struct bpfhv_tx_context *ctx,
 static int BPFHV_FUNC(pkt_virtio_net_md_set, struct bpfhv_rx_context *ctx,
                       const struct virtio_net_hdr *hdr);
 #endif
+static int BPFHV_FUNC(smp_mb_full);
+
+
+#define ACCESS_ONCE(x) (*(volatile typeof(x) *)&(x))
+#define compiler_barrier() __asm__ __volatile__ ("");
+#define smp_mb_release()    compiler_barrier()
+#define smp_mb_acquire()    compiler_barrier()
 
 __section("txp")
 int sring_txp(struct bpfhv_tx_context *ctx)
