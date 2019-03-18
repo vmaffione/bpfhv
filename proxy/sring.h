@@ -46,7 +46,7 @@ struct sring_tx_context {
     uint32_t qmask;
     uint32_t prod;
     uint32_t clear;
-    uint32_t intr_enabled;
+    uint32_t intr_at;
     uint32_t pad1[28];
     uint32_t cons;
     uint32_t kick_enabled;

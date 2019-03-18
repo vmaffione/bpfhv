@@ -173,20 +173,22 @@ int sring_txi(struct bpfhv_tx_context *ctx)
     uint32_t ncompl;
     uint32_t cons;
 
+    if (ctx->min_completed_bufs == 0) {
+        return 0;
+    }
+
     cons = ACCESS_ONCE(priv->cons);
     ncompl = cons - priv->clear;
 
     if (ncompl >= ctx->min_completed_bufs) {
-        ACCESS_ONCE(priv->intr_enabled) = 0;
         return 1;
     }
-    ACCESS_ONCE(priv->intr_enabled) = 1;
-    /* Make sure store to priv->intr_enabled is visible before we
+    ACCESS_ONCE(priv->intr_at) = priv->clear + ctx->min_completed_bufs - 1;
+    /* Make sure store to priv->intr_at is visible before we
      * load again from priv->cons. */
     smp_mb_full();
     ncompl += ACCESS_ONCE(priv->cons) - cons;
     if (ncompl >= ctx->min_completed_bufs) {
-        ACCESS_ONCE(priv->intr_enabled) = 0;
         return 1;
     }
 

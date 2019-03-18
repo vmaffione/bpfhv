@@ -225,7 +225,8 @@ sring_tx_ctx_init(struct bpfhv_tx_context *ctx, size_t num_tx_bufs)
     assert((num_tx_bufs & (num_tx_bufs - 1)) == 0);
     priv->qmask = num_tx_bufs - 1;
     priv->prod = priv->cons = priv->clear = 0;
-    priv->kick_enabled = priv->intr_enabled = 1;
+    priv->kick_enabled = 1;
+    priv->intr_at = 0;
     memset(priv->desc, 0, num_tx_bufs * sizeof(priv->desc[0]));
 }
 
@@ -295,10 +296,10 @@ sring_txq_dump(struct bpfhv_tx_context *ctx)
 {
     struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
 
-    printf("sring.txq cl %u co %u pr %u kick %u intr %u\n",
+    printf("sring.txq cl %u co %u pr %u kick %u intr_at %u\n",
            ACCESS_ONCE(priv->clear), ACCESS_ONCE(priv->cons),
            ACCESS_ONCE(priv->prod), ACCESS_ONCE(priv->kick_enabled),
-           ACCESS_ONCE(priv->intr_enabled));
+           ACCESS_ONCE(priv->intr_at));
 }
 
 static size_t
@@ -533,13 +534,17 @@ sring_txq_drain(BpfhvBackend *be, struct bpfhv_tx_context *ctx,
     }
 
     if (count > 0) {
+        uint32_t old_cons = priv->cons;
+        uint32_t intr_at;
+
         /* Barrier between stores to sring entries and store to priv->cons. */
         __atomic_thread_fence(__ATOMIC_RELEASE);
         priv->cons = cons;
         /* Full memory barrier to ensure store(priv->cons) happens before
-         * load(priv->intr_enabled). See the double-check in sring_txi(). */
+         * load(priv->intr_at). See the double-check in sring_txi(). */
         __atomic_thread_fence(__ATOMIC_SEQ_CST);
-        *notify = ACCESS_ONCE(priv->intr_enabled);
+        intr_at = ACCESS_ONCE(priv->intr_at);
+        *notify = (uint32_t)(cons - intr_at - 1) < (uint32_t)(cons - old_cons);
     }
 
     return count;
