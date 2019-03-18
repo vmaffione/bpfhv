@@ -1614,7 +1614,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 #ifdef USE_NAPI
 	/* Enable the interrupts to clean this published buffer once
 	 * transmitted. */
-	ctx->min_completed_bufs = i;
+	ctx->min_completed_bufs = 1 + (bi->tx_bufs - txq->tx_free_bufs) / 2;
 	BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_INTRS], ctx);
 #else  /* !USE_NAPI */
 	skb_orphan(skb);
@@ -1628,7 +1628,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		bool have_enough_bufs;
 
 		/* Enable interrupts if we are out of buffers. */
-		ctx->min_completed_bufs = 2 + MAX_SKB_FRAGS - txq->tx_free_bufs;
+		ctx->min_completed_bufs = 1 + (bi->tx_bufs - txq->tx_free_bufs) / 2;
 		have_enough_bufs = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_INTRS], ctx);
 		if (!have_enough_bufs) {
 			netif_stop_subqueue(netdev, txq->idx);
@@ -1663,7 +1663,7 @@ bpfhv_tx_poll(struct napi_struct *napi, int budget)
 	wakeup = (txq->tx_free_bufs >= 2 + MAX_SKB_FRAGS);
 
 	/* Enable interrupts and complete NAPI. */
-	ctx->min_completed_bufs = 1;
+	ctx->min_completed_bufs = 1 + (bi->tx_bufs - txq->tx_free_bufs) / 2;
 	more = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_INTRS], ctx);
 
 	__netif_tx_unlock(q);
