@@ -30,7 +30,7 @@ try:
         tokens = line.split()
         if len(tokens) != 3:
             continue
-        val = float(tokens[1])
+        val = float(tokens[1].replace(',', ''))
         metric = tokens[2]
 
         values[mcnt] = val
