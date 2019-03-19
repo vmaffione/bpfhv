@@ -1226,7 +1226,9 @@ main_loop(BpfhvBackend *be)
         n = poll(pfd, sizeof(pfd)/sizeof(pfd[0]), poll_timeout);
         if (n == 0) {
             /* Timeout. We need to compute and show statistics. */
-            show_stats(be);
+            if (be->running) {
+                show_stats(be);
+            }
             continue;
         } else if (n < 0) {
             fprintf(stderr, "poll() failed: %s\n", strerror(errno));
