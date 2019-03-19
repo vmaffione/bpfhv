@@ -32,5 +32,5 @@ HSH=${HSH:0:2}
 sudo ip link set $IF address be:c7:54:8a:13:${HSH}
 sudo ip link set $IF up
 sudo ip addr add $IPADDR dev $IF
-sudo proxy/backend -p $SOCK -P ${SOCK}.pid -t $IF -v $@
+sudo proxy/backend -p $SOCK -P ${SOCK}.pid -i $IF -v $@
 sigint

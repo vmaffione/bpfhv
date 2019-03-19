@@ -18,6 +18,9 @@ Some goals:
 	  virtio implementation in Linux 4.20: it needs to support
 	  both split and packet ring --> complex, error prone, less
 	  efficient.
+        - Change virtual switch and backend under the hood (tap,
+          netmap, other).
+        - Adapt to changing workloads.
 
 TODO (driver):
 	- Try to replace dma_map_single() with dma_map_page() on

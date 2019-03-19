@@ -15,11 +15,14 @@
 #include <pthread.h>
 #include <sys/eventfd.h>
 #include <stdlib.h>
-#include <linux/if.h>
 #include <linux/if_tun.h>
 #include <sys/ioctl.h>
 #include <sys/uio.h>
 #include <signal.h>
+#ifdef WITH_NETMAP
+#include <libnetmap.h>
+#endif
+#include <linux/if.h>
 
 #include "bpfhv-proxy.h"
 #include "bpfhv.h"
@@ -36,6 +39,7 @@
 #endif
 #define compiler_barrier() __asm__ __volatile__ ("");
 
+#define MIN(a,b) ((a) < (b) ? (a) : (b))
 
 #define BPFHV_MAX_QUEUES        16
 
@@ -61,13 +65,35 @@ typedef struct BpfhvBackendQueue {
     char name[8];
 } BpfhvBackendQueue;
 
+struct BpfhvBackend;
+
+typedef ssize_t (*BeSendFun)(struct BpfhvBackend *be, const struct iovec *iov,
+                             size_t iovcnt);
+typedef ssize_t (*BeRecvFun)(struct BpfhvBackend *be, const struct iovec *iov,
+                             size_t iovcnt);
+typedef void (*BePostSendFun)(struct BpfhvBackend *be);
+
 /* Main data structure supporting a single bpfhv vNIC. */
 typedef struct BpfhvBackend {
     /* A file containing the PID of this process. */
     const char *pidfile;
 
-    /* File descriptor of the TAP device (the real net backend). */
-    int tapfd;
+    /* File descriptor of the TAP device or the netmap port
+     * (the real net backend). */
+    int befd;
+
+#ifdef WITH_NETMAP
+    struct {
+        struct nmport_d *port;
+        struct netmap_ring *txr;
+        struct netmap_ring *rxr;
+    } nm;
+#endif
+
+    /* Send and receive functions for real send/receive operations. */
+    BeSendFun send;
+    BeRecvFun recv;
+    BePostSendFun postsend;
 
     /* Virtio-net header length used by the TAP interface. */
     int vnet_hdr_len;
@@ -186,6 +212,169 @@ translate_addr(BpfhvBackend *be, uint64_t gpa, uint64_t len)
 
     return re->va_start + (gpa - re->gpa_start);
 }
+
+static ssize_t
+tap_recv(BpfhvBackend *be, const struct iovec *iov, size_t iovcnt)
+{
+    return readv(be->befd, iov, iovcnt);
+}
+
+static ssize_t
+tap_send(BpfhvBackend *be, const struct iovec *iov, size_t iovcnt)
+{
+    return writev(be->befd, iov, iovcnt);
+}
+
+#ifdef WITH_NETMAP
+static ssize_t
+netmap_recv(BpfhvBackend *be, const struct iovec *iov, size_t iovcnt)
+{
+    struct netmap_ring *ring = be->nm.rxr;
+    uint32_t head = ring->head;
+    uint32_t tail = ring->tail;
+    struct netmap_slot *slot;
+    size_t iov_frag_left;
+    size_t nm_frag_left;
+    size_t iov_frag_ofs;
+    size_t nm_frag_ofs;
+    ssize_t totlen = 0;
+    uint8_t *src;
+
+    if (unlikely(head == tail)) {
+        /* Nothing to read. */
+        return 0;
+    }
+
+    iov_frag_left = iov->iov_len;
+    iov_frag_ofs = 0;
+    slot = ring->slot + head;
+    src = (uint8_t *)NETMAP_BUF(ring, slot->buf_idx);
+    nm_frag_left = slot->len;
+    nm_frag_ofs = 0;
+
+    for (;;) {
+        size_t copy;
+
+        copy = MIN(nm_frag_left, iov_frag_left);
+        memcpy(iov->iov_base + iov_frag_ofs, src + nm_frag_ofs, copy);
+        iov_frag_ofs += copy;
+        iov_frag_left -= copy;
+        nm_frag_ofs += copy;
+        nm_frag_left -= copy;
+        totlen += copy;
+
+        if (nm_frag_left == 0) {
+            head = nm_ring_next(ring, head);
+            if ((slot->flags & NS_MOREFRAG) == 0 || head == tail) {
+                /* End Of Packet (or truncated packet). */
+                break;
+            }
+            slot = ring->slot + head;
+            src = (uint8_t *)NETMAP_BUF(ring, slot->buf_idx);
+            nm_frag_left = slot->len;
+            nm_frag_ofs = 0;
+        }
+
+        if (iov_frag_left == 0) {
+            iovcnt--;
+            if (iovcnt == 0) {
+                size_t truncated = nm_frag_left;
+
+                /* Ran out of space in the iovec. Skip the rest
+                 * of the packet. */
+                while ((slot->flags & NS_MOREFRAG) && head != tail) {
+                    head = nm_ring_next(ring, head);
+                    slot = ring->slot + head;
+                    truncated += slot->len;
+                }
+                fprintf(stderr, "Not enough space in the recv iovec "
+                                "(%zu bytes truncated)\n", truncated);
+                break;
+            }
+            iov++;
+            iov_frag_left = iov->iov_len;
+            iov_frag_ofs = 0;
+        }
+    }
+
+    ring->head = ring->cur = head;
+
+    return totlen;
+}
+
+static ssize_t
+netmap_send(BpfhvBackend *be, const struct iovec *iov, size_t iovcnt)
+{
+    struct netmap_ring *ring = be->nm.txr;
+    uint32_t head = ring->head;
+    uint32_t tail = ring->tail;
+    struct netmap_slot *slot;
+    size_t iov_frag_left;
+    size_t nm_frag_left;
+    size_t iov_frag_ofs;
+    size_t nm_frag_ofs;
+    ssize_t totlen = 0;
+    uint8_t *dst;
+
+    iov_frag_left = iov->iov_len;
+    iov_frag_ofs = 0;
+    slot = ring->slot + head;
+    dst = (uint8_t *)NETMAP_BUF(ring, slot->buf_idx);
+    nm_frag_left = ring->nr_buf_size;
+    nm_frag_ofs = 0;
+
+    for (;;) {
+        size_t copy;
+
+        if (unlikely(head == tail)) {
+            /* Ran out of descriptors. */
+            ring->cur = tail;
+            return 0;
+        }
+
+        copy = MIN(nm_frag_left, iov_frag_left);
+        memcpy(dst + nm_frag_ofs, iov->iov_base + iov_frag_ofs, copy);
+        iov_frag_ofs += copy;
+        iov_frag_left -= copy;
+        nm_frag_ofs += copy;
+        nm_frag_left -= copy;
+        totlen += copy;
+
+        if (iov_frag_left == 0) {
+            iovcnt--;
+            if (iovcnt == 0) {
+                break;
+            }
+            iov++;
+            iov_frag_left = iov->iov_len;
+            iov_frag_ofs = 0;
+        }
+
+        if (nm_frag_left == 0) {
+            slot->len = nm_frag_ofs;
+            slot->flags = NS_MOREFRAG;
+            head = nm_ring_next(ring, head);
+            slot = ring->slot + head;
+            dst = (uint8_t *)NETMAP_BUF(ring, slot->buf_idx);
+            nm_frag_left = ring->nr_buf_size;
+            nm_frag_ofs = 0;
+        }
+    }
+
+    slot->len = nm_frag_ofs;
+    slot->flags = 0;
+    head = nm_ring_next(ring, head);
+    ring->head = ring->cur = head;
+
+    return totlen;
+}
+
+static void
+netmap_postsend(BpfhvBackend *be)
+{
+    ioctl(be->befd, NIOCTXSYNC, NULL);
+}
+#endif
 
 /*
  * The sring implementation.
@@ -376,13 +565,13 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
 
         /* Read into the scatter-gather buffer referenced by the collected
          * descriptors. */
-        pktsize = readv(be->tapfd, iov, iovcnt);
+        pktsize = be->recv(be, iov, iovcnt);
         if (pktsize <= 0) {
             /* No more data to read (or error). We need to rewind to the
              * first unused descriptor and stop. */
             cons = cons_first;
             if (unlikely(pktsize < 0 && errno != EAGAIN)) {
-                fprintf(stderr, "readv(tapfd) failed: %s\n", strerror(errno));
+                fprintf(stderr, "recv() failed: %s\n", strerror(errno));
             }
             break;
         }
@@ -494,7 +683,7 @@ sring_txq_drain(BpfhvBackend *be, struct bpfhv_tx_context *ctx,
                 iov[0].iov_len = sizeof(hdr);
             }
 
-            ret = writev(be->tapfd, iov, iovcnt);
+            ret = be->send(be, iov, iovcnt);
 #if 0
             printf("Transmitted iovcnt %u --> %d\n", iovcnt, ret);
 #endif
@@ -506,7 +695,7 @@ sring_txq_drain(BpfhvBackend *be, struct bpfhv_tx_context *ctx,
                     if (can_send != NULL && errno == EAGAIN) {
                         *can_send = 0;
                     } else if (verbose) {
-                        fprintf(stderr, "writev(tapfd) failed: %s\n",
+                        fprintf(stderr, "send() failed: %s\n",
                                 strerror(errno));
                     }
                 }
@@ -537,6 +726,10 @@ sring_txq_drain(BpfhvBackend *be, struct bpfhv_tx_context *ctx,
         uint32_t old_cons = priv->cons;
         uint32_t intr_at;
 
+        if (be->postsend) {
+            be->postsend(be);
+        }
+
         /* Barrier between stores to sring entries and store to priv->cons. */
         __atomic_thread_fence(__ATOMIC_RELEASE);
         priv->cons = cons;
@@ -556,7 +749,7 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
     int vnet_hdr_len = be->vnet_hdr_len;
     int very_verbose = (verbose >= 2);
     struct pollfd *pfd_stop;
-    struct pollfd *pfd_tap;
+    struct pollfd *pfd_if;
     int poll_timeout = -1;
     struct pollfd *pfd;
     unsigned int nfds;
@@ -567,15 +760,15 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
     nfds = be->num_queues + 2;
     pfd = calloc(nfds, sizeof(pfd[0]));
     assert(pfd != NULL);
-    pfd_tap = pfd + nfds - 2;
+    pfd_if = pfd + nfds - 2;
     pfd_stop = pfd + nfds - 1;
 
     for (i = 0; i < be->num_queues; i++) {
         pfd[i].fd = be->q[i].kickfd;
         pfd[i].events = POLLIN;
     }
-    pfd_tap->fd = be->tapfd;
-    pfd_tap->events = 0;
+    pfd_if->fd = be->befd;
+    pfd_if->events = 0;
     pfd_stop->fd = be->stopfd;
     pfd_stop->events = POLLIN;
     can_receive = can_send = 1;
@@ -597,9 +790,9 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
         /* Poll TAP interface for new receive packets only if we
          * can actually receive packets. If TAP send buffer is full we
          * also wait on more room. */
-        pfd_tap->events = can_receive ? POLLIN : 0;
+        pfd_if->events = can_receive ? POLLIN : 0;
         if (unlikely(!can_send)) {
-            pfd_tap->events |= POLLOUT;
+            pfd_if->events |= POLLOUT;
         }
 
         n = poll(pfd, nfds, poll_timeout);
@@ -910,9 +1103,9 @@ main_loop(BpfhvBackend *be)
         return -1;
     }
 
-    ret = fcntl(be->tapfd, F_SETFL, O_NONBLOCK);
+    ret = fcntl(be->befd, F_SETFL, O_NONBLOCK);
     if (ret) {
-        fprintf(stderr, "fcntl(tapfd, F_SETFL) failed: %s\n",
+        fprintf(stderr, "fcntl(befd, F_SETFL) failed: %s\n",
                 strerror(errno));
         return -1;
     }
@@ -1499,7 +1692,7 @@ tap_alloc(const char *ifname, int vnet_hdr_len, int csum, int gso)
     /* Try to create the device. */
     err = ioctl(fd, TUNSETIFF, (void *)&ifr);
     if(err < 0) {
-        fprintf(stderr, "ioctl(tapfd, TUNSETIFF) failed: %s\n",
+        fprintf(stderr, "ioctl(befd, TUNSETIFF) failed: %s\n",
                 strerror(errno));
         close(fd);
         return err;
@@ -1510,7 +1703,7 @@ tap_alloc(const char *ifname, int vnet_hdr_len, int csum, int gso)
 
         err = ioctl(fd, TUNSETVNETHDRSZ, &vnet_hdr_len);
         if (err < 0) {
-            fprintf(stderr, "ioctl(tapfd, TUNSETIFF) failed: %s\n",
+            fprintf(stderr, "ioctl(befd, TUNSETIFF) failed: %s\n",
                     strerror(errno));
         }
 
@@ -1523,7 +1716,7 @@ tap_alloc(const char *ifname, int vnet_hdr_len, int csum, int gso)
 
         err = ioctl(fd, TUNSETOFFLOAD, offloads);
         if (err < 0) {
-            fprintf(stderr, "ioctl(tapfd, TUNSETOFFLOAD) failed: %s\n",
+            fprintf(stderr, "ioctl(befd, TUNSETOFFLOAD) failed: %s\n",
                     strerror(errno));
         }
     }
@@ -1538,7 +1731,8 @@ usage(const char *progname)
            "    -h (show this help and exit)\n"
            "    -p UNIX_SOCKET_PATH\n"
            "    -P PID_FILE\n"
-           "    -t TAP_NAME\n"
+           "    -i INTERFACE_NAME\n"
+           "    -b BACKEND_TYPE (tap,netmap)\n"
            "    -f EBPF_PROGS_PATH\n"
            "    -C (enable checksum offloads)\n"
            "    -G (enable TCP/UDP GSO offloads)\n"
@@ -1551,7 +1745,8 @@ int
 main(int argc, char **argv)
 {
     struct sockaddr_un server_addr = { };
-    const char *tapname = "tapx";
+    const char *backend = "tap";
+    const char *ifname = "tapx";
     const char *path = NULL;
     struct sigaction sa;
     int csum = 0;
@@ -1563,8 +1758,9 @@ main(int argc, char **argv)
     be.pidfile = NULL;
     be.progfile = "proxy/sring_progs.o";
     be.busy_wait = 0;
+    be.befd = -1;
 
-    while ((opt = getopt(argc, argv, "hp:P:f:t:CGBv")) != -1) {
+    while ((opt = getopt(argc, argv, "hp:P:f:i:CGBvb:")) != -1) {
         switch (opt) {
         case 'h':
             usage(argv[0]);
@@ -1582,8 +1778,8 @@ main(int argc, char **argv)
             be.progfile = optarg;
             break;
 
-        case 't':
-            tapname = optarg;
+        case 'i':
+            ifname = optarg;
             break;
 
         case 'v':
@@ -1600,6 +1796,15 @@ main(int argc, char **argv)
 
         case 'B':
             be.busy_wait = 1;
+            break;
+
+        case 'b':
+            if (strcmp(optarg, "tap") &&
+                strcmp(optarg, "netmap")) {
+                fprintf(stderr, "Unknown backend type '%s'\n", optarg);
+                usage(argv[0]);
+            }
+            backend = optarg;
             break;
         }
     }
@@ -1640,14 +1845,42 @@ main(int argc, char **argv)
         return ret;
     }
 
-    /* Open the TAP device to use as network backend. */
-    be.vnet_hdr_len = (csum || gso) ?
-                      sizeof(struct virtio_net_hdr_v1) : 0;
-    be.tapfd = tap_alloc(tapname, be.vnet_hdr_len, csum, gso);
-    if (be.tapfd < 0) {
-        fprintf(stderr, "Failed to allocate TAP device\n");
-        return -1;
+    if (!strcmp(backend, "tap")) {
+        /* Open a TAP device to use as network backend. */
+        be.vnet_hdr_len = (csum || gso) ?
+            sizeof(struct virtio_net_hdr_v1) : 0;
+        be.befd = tap_alloc(ifname, be.vnet_hdr_len, csum, gso);
+        if (be.befd < 0) {
+            fprintf(stderr, "Failed to allocate TAP device\n");
+            return -1;
+        }
+        be.recv = tap_recv;
+        be.send = tap_send;
+        be.postsend = NULL;
     }
+#ifdef WITH_NETMAP
+    else if (!strcmp(backend, "netmap")) {
+        /* Open a netmap port to use as network backend. */
+        be.vnet_hdr_len = 0;
+        csum = gso = 0;
+        be.nm.port = nmport_open(ifname);
+        if (be.nm.port == NULL) {
+            fprintf(stderr, "nmport_open(%s) failed: %s\n", ifname,
+                    strerror(errno));
+            return -1;
+        }
+        assert(be.nm.port->register_done);
+        assert(be.nm.port->mmap_done);
+        assert(be.nm.port->fd >= 0);
+        assert(be.nm.port->nifp != NULL);
+        be.nm.txr = NETMAP_TXRING(be.nm.port->nifp, 0);
+        be.nm.rxr = NETMAP_RXRING(be.nm.port->nifp, 0);
+        be.befd = be.nm.port->fd;
+        be.recv = netmap_recv;
+        be.send = netmap_send;
+        be.postsend = netmap_postsend;
+    }
+#endif
 
     cfd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (cfd < 0) {
@@ -1674,9 +1907,16 @@ main(int argc, char **argv)
                               |  BPFHV_F_UFO   | BPFHV_F_UDP_LRO;
         }
     }
+
     ret = main_loop(&be);
+
     close(cfd);
-    close(be.tapfd);
+    close(be.befd);
+#ifdef WITH_NETMAP
+    if (be.nm.port != NULL) {
+        nmport_close(be.nm.port);
+    }
+#endif
     if (be.pidfile != NULL) {
         unlink(be.pidfile);
     }
