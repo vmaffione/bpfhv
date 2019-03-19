@@ -43,14 +43,24 @@ struct sring_tx_desc {
 };
 
 struct sring_tx_context {
-    uint32_t qmask;
+    /* Guest write, hv reads. */
     uint32_t prod;
-    uint32_t clear;
     uint32_t intr_at;
-    uint32_t pad1[28];
+    uint32_t pad1[30];
+
+    /* Guest reads, hv writes. */
     uint32_t cons;
     uint32_t kick_enabled;
     uint32_t pad2[30];
+
+    /* Guest reads, hv reads. */
+    uint32_t qmask;
+    uint32_t pad3[31];
+
+    /* Private to the guest. */
+    uint32_t clear;
+    uint32_t pad4[31];
+
     struct sring_tx_desc desc[0];
 };
 
@@ -70,14 +80,24 @@ struct sring_rx_desc {
 };
 
 struct sring_rx_context {
-    uint32_t qmask;
+    /* Guest write, hv reads. */
     uint32_t prod;
-    uint32_t clear;
     uint32_t intr_enabled;
-    uint32_t pad1[28];
+    uint32_t pad1[30];
+
+    /* Guest reads, hv writes. */
     uint32_t cons;
     uint32_t kick_enabled;
     uint32_t pad2[30];
+
+    /* Guest reads, hv reads. */
+    uint32_t qmask;
+    uint32_t pad3[31];
+
+    /* Private to the guest. */
+    uint32_t clear;
+    uint32_t pad4[31];
+
     struct sring_rx_desc desc[0];
 };
 
