@@ -1179,13 +1179,11 @@ main_loop(BpfhvBackend *be)
         return -1;
     }
 
-    if (strcmp(be->backend, "netmap") != 0) {
-        ret = fcntl(be->befd, F_SETFL, O_NONBLOCK);
-        if (ret) {
-            fprintf(stderr, "fcntl(befd, F_SETFL) failed: %s\n",
-                    strerror(errno));
-            return -1;
-        }
+    ret = fcntl(be->befd, F_SETFL, O_NONBLOCK);
+    if (ret) {
+        fprintf(stderr, "fcntl(befd, F_SETFL) failed: %s\n",
+                strerror(errno));
+        return -1;
     }
 
     poll_timeout = be->collect_stats ? 2000/*ms*/ : -1;
@@ -1887,10 +1885,14 @@ main(int argc, char **argv)
             break;
 
         case 'b':
-            if (strcmp(optarg, "tap") &&
-                strcmp(optarg, "netmap")) {
+            if (strcmp(optarg, "tap")
+#ifdef WITH_NETMAP
+                && strcmp(optarg, "netmap")
+#endif
+            ) {
                 fprintf(stderr, "Unknown backend type '%s'\n", optarg);
                 usage(argv[0]);
+                return -1;
             }
             be.backend = optarg;
             break;
