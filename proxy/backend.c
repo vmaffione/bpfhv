@@ -97,6 +97,9 @@ typedef struct BpfhvBackend {
     /* Path of the object file containing the ebpf programs. */
     const char *progfile;
 
+    /* Backend type (tap, netmap). */
+    const char *backend;
+
     /* Set to 1 if we are collecting run-time statistics,
      * and timestamp useful to compute statistics. */
     int collect_stats;
@@ -1176,11 +1179,13 @@ main_loop(BpfhvBackend *be)
         return -1;
     }
 
-    ret = fcntl(be->befd, F_SETFL, O_NONBLOCK);
-    if (ret) {
-        fprintf(stderr, "fcntl(befd, F_SETFL) failed: %s\n",
-                strerror(errno));
-        return -1;
+    if (strcmp(be->backend, "netmap") != 0) {
+        ret = fcntl(be->befd, F_SETFL, O_NONBLOCK);
+        if (ret) {
+            fprintf(stderr, "fcntl(befd, F_SETFL) failed: %s\n",
+                    strerror(errno));
+            return -1;
+        }
     }
 
     poll_timeout = be->collect_stats ? 2000/*ms*/ : -1;
@@ -1827,7 +1832,6 @@ int
 main(int argc, char **argv)
 {
     struct sockaddr_un server_addr = { };
-    const char *backend = "tap";
     const char *ifname = "tapx";
     const char *path = NULL;
     struct sigaction sa;
@@ -1837,6 +1841,7 @@ main(int argc, char **argv)
     int cfd;
     int ret;
 
+    be.backend = "tap";
     be.pidfile = NULL;
     be.progfile = "proxy/sring_progs.o";
     be.busy_wait = 0;
@@ -1887,7 +1892,7 @@ main(int argc, char **argv)
                 fprintf(stderr, "Unknown backend type '%s'\n", optarg);
                 usage(argv[0]);
             }
-            backend = optarg;
+            be.backend = optarg;
             break;
 
         case 'S':
@@ -1932,7 +1937,7 @@ main(int argc, char **argv)
         return ret;
     }
 
-    if (!strcmp(backend, "tap")) {
+    if (!strcmp(be.backend, "tap")) {
         /* Open a TAP device to use as network backend. */
         be.vnet_hdr_len = (csum || gso) ?
             sizeof(struct virtio_net_hdr_v1) : 0;
@@ -1946,7 +1951,7 @@ main(int argc, char **argv)
         be.postsend = NULL;
     }
 #ifdef WITH_NETMAP
-    else if (!strcmp(backend, "netmap")) {
+    else if (!strcmp(be.backend, "netmap")) {
         /* Open a netmap port to use as network backend. */
         be.vnet_hdr_len = 0;
         csum = gso = 0;
