@@ -18,6 +18,7 @@
 #include <linux/if_tun.h>
 #include <sys/ioctl.h>
 #include <sys/uio.h>
+#include <sys/time.h>
 #include <signal.h>
 #ifdef WITH_NETMAP
 #include <libnetmap.h>
@@ -55,6 +56,13 @@ typedef struct BpfhvBackendMemoryRegion {
     void        *va_start;
 } BpfhvBackendMemoryRegion;
 
+typedef struct BpfhvBackendQueueStats {
+    uint64_t    pkts;
+    uint64_t    batches;
+    uint64_t    kicks;
+    uint64_t    irqs;
+} BpfhvBackendQueueStats;
+
 typedef struct BpfhvBackendQueue {
     union {
         struct bpfhv_rx_context *rx;
@@ -62,6 +70,8 @@ typedef struct BpfhvBackendQueue {
     } ctx;
     int kickfd;
     int irqfd;
+    BpfhvBackendQueueStats stats;
+    BpfhvBackendQueueStats pstats;
     char name[8];
 } BpfhvBackendQueue;
 
@@ -78,32 +88,17 @@ typedef struct BpfhvBackend {
     /* A file containing the PID of this process. */
     const char *pidfile;
 
-    /* File descriptor of the TAP device or the netmap port
-     * (the real net backend). */
-    int befd;
-
-#ifdef WITH_NETMAP
-    struct {
-        struct nmport_d *port;
-        struct netmap_ring *txr;
-        struct netmap_ring *rxr;
-    } nm;
-#endif
-
-    /* Send and receive functions for real send/receive operations. */
-    BeSendFun send;
-    BeRecvFun recv;
-    BePostSendFun postsend;
-
-    /* Virtio-net header length used by the TAP interface. */
-    int vnet_hdr_len;
-
     /* Socket file descriptor to exchange control message with the
      * hypervisor. */
     int cfd;
 
     /* Path of the object file containing the ebpf programs. */
     const char *progfile;
+
+    /* Set to 1 if we are collecting run-time statistics,
+     * and timestamp useful to compute statistics. */
+    int collect_stats;
+    struct timeval stats_ts;
 
     /* The features we support. */
     uint64_t features_avail;
@@ -143,6 +138,26 @@ typedef struct BpfhvBackend {
     /* An eventfd useful to stop the processing thread. */
     int stopfd;
     int stopflag;
+
+    /* File descriptor of the TAP device or the netmap port
+     * (the real net backend). */
+    int befd;
+
+    /* Virtio-net header length used by the TAP interface. */
+    int vnet_hdr_len;
+
+#ifdef WITH_NETMAP
+    struct {
+        struct nmport_d *port;
+        struct netmap_ring *txr;
+        struct netmap_ring *rxr;
+    } nm;
+#endif
+
+    /* Send and receive functions for real send/receive operations. */
+    BeSendFun send;
+    BeRecvFun recv;
+    BePostSendFun postsend;
 
     /* RX and TX queues (in this order). */
     BpfhvBackendQueue q[BPFHV_MAX_QUEUES];
@@ -813,6 +828,7 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
             count = sring_rxq_push(be, rxq->ctx.rx, max_rx_pkt_size,
                                    vnet_hdr_len, &can_receive, &notify);
             if (notify) {
+                rxq->stats.irqs++;
                 eventfd_signal(rxq->irqfd);
                 if (unlikely(very_verbose)) {
                     printf("Interrupt on %s\n", rxq->name);
@@ -823,8 +839,12 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
                  * so that we can keep processing. */
                 poll_timeout = 0;
             }
-            if (unlikely(very_verbose && count > 0)) {
-                sring_rxq_dump(rxq->ctx.rx);
+            if (count > 0) {
+                rxq->stats.pkts += count;
+                rxq->stats.batches++;
+                if (unlikely(very_verbose)) {
+                    sring_rxq_dump(rxq->ctx.rx);
+                }
             }
         }
 
@@ -841,6 +861,7 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
             count = sring_txq_drain(be, ctx, vnet_hdr_len,
                                     &can_send, &notify);
             if (notify) {
+                txq->stats.irqs++;
                 eventfd_signal(txq->irqfd);
                 if (unlikely(very_verbose)) {
                     printf("Interrupt on %s\n", txq->name);
@@ -861,14 +882,19 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
                     poll_timeout = 0;
                 }
             }
-            if (unlikely(very_verbose && count > 0)) {
-                sring_txq_dump(ctx);
+            if (count > 0) {
+                txq->stats.pkts += count;
+                txq->stats.batches++;
+                if (unlikely(very_verbose)) {
+                    sring_txq_dump(ctx);
+                }
             }
         }
 
         /* Drain transmit and receive kickfds if needed. */
         for (i = 0; i < be->num_queues; i++) {
             if (pfd[i].revents & POLLIN) {
+                be->q[i].stats.kicks++;
                 if (unlikely(very_verbose)) {
                     printf("Kick on %s\n", be->q[i].name);
                 }
@@ -910,17 +936,23 @@ process_packets_spin(BpfhvBackend *be, size_t max_rx_pkt_size)
         {
             BpfhvBackendQueue *rxq = be->q + 0;
             int notify = 0;
+            size_t count;
 
-            sring_rxq_push(be, rxq->ctx.rx, max_rx_pkt_size,
+            count = sring_rxq_push(be, rxq->ctx.rx, max_rx_pkt_size,
                            vnet_hdr_len, /*can_receive=*/NULL, &notify);
             if (notify) {
+                rxq->stats.irqs++;
                 eventfd_signal(rxq->irqfd);
                 if (unlikely(very_verbose)) {
                     printf("Interrupt on %s\n", rxq->name);
                 }
             }
-            if (unlikely(very_verbose)) {
-                sring_rxq_dump(rxq->ctx.rx);
+            if (count > 0) {
+                rxq->stats.pkts += count;
+                rxq->stats.batches++;
+                if (unlikely(very_verbose)) {
+                    sring_rxq_dump(rxq->ctx.rx);
+                }
             }
         }
 
@@ -929,17 +961,23 @@ process_packets_spin(BpfhvBackend *be, size_t max_rx_pkt_size)
         for (i = TXI_BEGIN(be); i < TXI_END(be); i++) {
             BpfhvBackendQueue *txq = be->q + i;
             int notify = 0;
+            size_t count;
 
-            sring_txq_drain(be, txq->ctx.tx, vnet_hdr_len,
+            count = sring_txq_drain(be, txq->ctx.tx, vnet_hdr_len,
                             /*can_send=*/NULL, &notify);
             if (notify) {
+                txq->stats.irqs++;
                 eventfd_signal(txq->irqfd);
                 if (unlikely(very_verbose)) {
                     printf("Interrupt on %s\n", txq->name);
                 }
             }
-            if (unlikely(very_verbose)) {
-                sring_txq_dump(txq->ctx.tx);
+            if (count > 0) {
+                txq->stats.pkts += count;
+                txq->stats.batches++;
+                if (unlikely(very_verbose)) {
+                    sring_txq_dump(txq->ctx.tx);
+                }
             }
         }
     }
@@ -1054,6 +1092,44 @@ backend_stop(BpfhvBackend *be)
 }
 
 static void
+show_stats(BpfhvBackend *be)
+{
+    struct timeval t;
+    unsigned long udiff;
+    double mdiff;
+    unsigned int i;
+
+    gettimeofday(&t, NULL);
+    udiff = (t.tv_sec - be->stats_ts.tv_sec) * 1000000 +
+            (t.tv_usec - be->stats_ts.tv_usec);
+    mdiff = udiff / 1000.0;
+
+    printf("Statistics:\n");
+    for (i = 0; i < be->num_queues; i++) {
+        BpfhvBackendQueue *q = be->q + i;
+        double dpkts = ACCESS_ONCE(q->stats.pkts) - q->pstats.pkts;
+        double dbatches = ACCESS_ONCE(q->stats.batches) - q->pstats.batches;
+        double dkicks = ACCESS_ONCE(q->stats.kicks) - q->pstats.kicks;
+        double dirqs = ACCESS_ONCE(q->stats.irqs) - q->pstats.irqs;
+        double avg_batch = 0.0;
+
+        q->pstats = q->stats;
+        dpkts /= mdiff;
+        dbatches /= mdiff;
+        dkicks /= mdiff;
+        dirqs /= mdiff;
+        if (dbatches) {
+            avg_batch = dpkts / dbatches;
+        }
+        printf("    %s: %4.3f Kpps, %4.3f Kkicks/s, %4.3f Kirqs/s, "
+               " avg_batch %3.0f\n",
+               q->name, dpkts, dkicks, dirqs, avg_batch);
+    }
+
+    be->stats_ts = t;
+}
+
+static void
 sigint_handler(int signum)
 {
     if (be.running) {
@@ -1073,6 +1149,7 @@ sigint_handler(int signum)
 static int
 main_loop(BpfhvBackend *be)
 {
+    int poll_timeout;
     int ret = -1;
     int i;
 
@@ -1110,6 +1187,9 @@ main_loop(BpfhvBackend *be)
         return -1;
     }
 
+    poll_timeout = be->collect_stats ? 2000/*ms*/ : -1;
+    gettimeofday(&be->stats_ts, NULL);
+
     for (;;) {
         ssize_t payload_size = 0;
         BpfhvProxyMessage resp = { };
@@ -1143,9 +1223,12 @@ main_loop(BpfhvBackend *be)
 
         pfd[0].fd = be->cfd;
         pfd[0].events = POLLIN;
-        n = poll(pfd, sizeof(pfd)/sizeof(pfd[0]), -1);
-        assert(n != 0);
-        if (n < 0) {
+        n = poll(pfd, sizeof(pfd)/sizeof(pfd[0]), poll_timeout);
+        if (n == 0) {
+            /* Timeout. We need to compute and show statistics. */
+            show_stats(be);
+            continue;
+        } else if (n < 0) {
             fprintf(stderr, "poll() failed: %s\n", strerror(errno));
             break;
         }
@@ -1737,6 +1820,7 @@ usage(const char *progname)
            "    -C (enable checksum offloads)\n"
            "    -G (enable TCP/UDP GSO offloads)\n"
            "    -B (run in busy-wait mode)\n"
+           "    -S (show run-time statistics)\n"
            "    -v (increase verbosity level)\n",
             progname);
 }
@@ -1759,8 +1843,9 @@ main(int argc, char **argv)
     be.progfile = "proxy/sring_progs.o";
     be.busy_wait = 0;
     be.befd = -1;
+    be.collect_stats = 0;
 
-    while ((opt = getopt(argc, argv, "hp:P:f:i:CGBvb:")) != -1) {
+    while ((opt = getopt(argc, argv, "hp:P:f:i:CGBvb:S")) != -1) {
         switch (opt) {
         case 'h':
             usage(argv[0]);
@@ -1805,6 +1890,10 @@ main(int argc, char **argv)
                 usage(argv[0]);
             }
             backend = optarg;
+            break;
+
+        case 'S':
+            be.collect_stats = 1;
             break;
         }
     }
