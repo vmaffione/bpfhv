@@ -29,8 +29,6 @@
 
 #include "bpfhv.h"
 
-#define USE_NAPI
-
 #define DEFAULT_MSG_ENABLE (NETIF_MSG_DRV|NETIF_MSG_PROBE|NETIF_MSG_LINK)
 static int debug = -1; /* use DEFAULT_MSG_ENABLE by default */
 module_param(debug, int, /* perm = allow override on modprobe */0);
@@ -43,6 +41,11 @@ MODULE_PARM_DESC(csum, "Enable checksum offload");
 static bool gso = true;
 module_param(gso, bool, /* perm = allow override on modprobe */0);
 MODULE_PARM_DESC(gso, "Enable generic segmentation offload");
+
+/* Whether to use NAPI for TX completion or not. */
+static bool tx_napi = false;
+module_param(tx_napi, bool, /* perm = allow override on modprobe */0);
+MODULE_PARM_DESC(tx_napi, "Use NAPI for TX completion");
 
 struct bpfhv_rxq;
 struct bpfhv_txq;
@@ -688,11 +691,11 @@ bpfhv_tx_intr(int irq, void *data)
 {
 	struct bpfhv_txq *txq = data;
 
-#ifdef USE_NAPI
-	napi_schedule(&txq->napi);
-#else  /* !USE_NAPI */
-	netif_wake_subqueue(txq->bi->netdev, txq - txq->bi->txqs);
-#endif /* !USE_NAPI */
+	if (tx_napi) {
+		napi_schedule(&txq->napi);
+	} else {
+		netif_wake_subqueue(txq->bi->netdev, txq - txq->bi->txqs);
+	}
 
 	return IRQ_HANDLED;
 }
@@ -1611,29 +1614,31 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	netif_info(bi, tx_queued, bi->netdev,
 		"txp(%u bytes) --> %d\n", skb->len, ret);
 
-#ifdef USE_NAPI
-	/* Enable the interrupts to clean this published buffer once
-	 * transmitted. */
-	ctx->min_completed_bufs = 1 + (bi->tx_bufs - txq->tx_free_bufs) / 2;
-	BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_INTRS], ctx);
-#else  /* !USE_NAPI */
-	skb_orphan(skb);
-	nf_reset(skb);
-#endif /* !USE_NAPI */
+	if (tx_napi) {
+		/* Enable the interrupts to clean this published buffer once
+		 * transmitted. */
+		ctx->min_completed_bufs = 1 + (bi->tx_bufs - txq->tx_free_bufs) / 2;
+		BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_INTRS], ctx);
+	} else {
+		skb_orphan(skb);
+		nf_reset(skb);
+	}
 
 	if (txq->tx_free_bufs < 2 + MAX_SKB_FRAGS) {
-#ifdef USE_NAPI
-		netif_stop_subqueue(netdev, txq->idx);
-#else  /* !USE_NAPI */
-		bool have_enough_bufs;
-
-		/* Enable interrupts if we are out of buffers. */
-		ctx->min_completed_bufs = 1 + (bi->tx_bufs - txq->tx_free_bufs) / 2;
-		have_enough_bufs = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_INTRS], ctx);
-		if (!have_enough_bufs) {
+		if (tx_napi) {
 			netif_stop_subqueue(netdev, txq->idx);
+		} else {
+			bool have_enough_bufs;
+
+			/* Enable interrupts if we are out of buffers. */
+			ctx->min_completed_bufs =
+				1 + (bi->tx_bufs - txq->tx_free_bufs) / 2;
+			have_enough_bufs = BPF_PROG_RUN(
+				bi->progs[BPFHV_PROG_TX_INTRS], ctx);
+			if (!have_enough_bufs) {
+				netif_stop_subqueue(netdev, txq->idx);
+			}
 		}
-#endif /* !USE_NAPI */
 	}
 
 	if (!skb->xmit_more && (ctx->oflags & BPFHV_OFLAGS_NOTIF_NEEDED)) {
