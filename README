@@ -23,6 +23,9 @@ Some goals:
         - Adapt to changing workloads.
 
 TODO (driver):
+        - Let BPFHV_MAX_TX_BUFS and BPFHV_MAX_RX_BUFS be variable.
+	  This requires of course reshaping the layout of the
+	  context data structures.
 	- Try to replace dma_map_single() with dma_map_page() on
 	  the RX datapath ? Not sure this is relevant.
 	- What if the eBPF program needs to modify the SG layout,
