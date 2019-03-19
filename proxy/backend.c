@@ -70,6 +70,7 @@ typedef struct BpfhvBackendQueue {
     } ctx;
     int kickfd;
     int irqfd;
+    int notify;
     BpfhvBackendQueueStats stats;
     BpfhvBackendQueueStats pstats;
     char name[8];
@@ -507,9 +508,9 @@ sring_txq_dump(struct bpfhv_tx_context *ctx)
 }
 
 static size_t
-sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
-               size_t max_pkt_size, int vnet_hdr_len,
-               int *can_receive, int *notify)
+sring_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
+               struct bpfhv_rx_context *ctx, size_t max_pkt_size,
+               int vnet_hdr_len, int *can_receive)
 {
     struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
     uint32_t prod = ACCESS_ONCE(priv->prod);
@@ -520,6 +521,8 @@ sring_rxq_push(BpfhvBackend *be, struct bpfhv_rx_context *ctx,
     /* Make sure the load of from priv->prod is not delayed after the
      * loads from the ring. */
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
+
+    rxq->notify = 0;
 
     for (count = 0; count < BPFHV_BE_RX_BUDGET; count++) {
         struct virtio_net_hdr_v1 hdr;
@@ -636,15 +639,18 @@ out:
         /* Full memory barrier to ensure store(priv->cons) happens before
          * load(priv->intr_enabled). See the double-check in sring_rxi().*/
         __atomic_thread_fence(__ATOMIC_SEQ_CST);
-        *notify = ACCESS_ONCE(priv->intr_enabled);
+        rxq->notify = ACCESS_ONCE(priv->intr_enabled);
+        rxq->stats.pkts += count;
+        rxq->stats.batches++;
     }
 
     return count;
 }
 
 static size_t
-sring_txq_drain(BpfhvBackend *be, struct bpfhv_tx_context *ctx,
-                int vnet_hdr_len, int *can_send, int *notify)
+sring_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq,
+                struct bpfhv_tx_context *ctx, int vnet_hdr_len,
+                int *can_send)
 {
     struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
     struct iovec iov[BPFHV_MAX_TX_BUFS+1];
@@ -658,6 +664,8 @@ sring_txq_drain(BpfhvBackend *be, struct bpfhv_tx_context *ctx,
     /* Make sure the load of from priv->prod is not delayed after the
      * loads from the ring. */
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
+
+    txq->notify = 0;
 
     while (cons != prod) {
         struct sring_tx_desc *txd = priv->desc + (cons & priv->qmask);
@@ -752,7 +760,10 @@ sring_txq_drain(BpfhvBackend *be, struct bpfhv_tx_context *ctx,
          * load(priv->intr_at). See the double-check in sring_txi(). */
         __atomic_thread_fence(__ATOMIC_SEQ_CST);
         intr_at = ACCESS_ONCE(priv->intr_at);
-        *notify = (uint32_t)(cons - intr_at - 1) < (uint32_t)(cons - old_cons);
+        txq->notify =
+            (uint32_t)(cons - intr_at - 1) < (uint32_t)(cons - old_cons);
+        txq->stats.pkts += count;
+        txq->stats.batches++;
     }
 
     return count;
@@ -821,13 +832,12 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
          * the first (and unique) RXQ. */
         {
             BpfhvBackendQueue *rxq = be->q + 0;
-            int notify = 0;
             size_t count;
 
             can_receive = 1;
-            count = sring_rxq_push(be, rxq->ctx.rx, max_rx_pkt_size,
-                                   vnet_hdr_len, &can_receive, &notify);
-            if (notify) {
+            count = sring_rxq_push(be, rxq, rxq->ctx.rx, max_rx_pkt_size,
+                                   vnet_hdr_len, &can_receive);
+            if (rxq->notify) {
                 rxq->stats.irqs++;
                 eventfd_signal(rxq->irqfd);
                 if (unlikely(very_verbose)) {
@@ -839,12 +849,8 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
                  * so that we can keep processing. */
                 poll_timeout = 0;
             }
-            if (count > 0) {
-                rxq->stats.pkts += count;
-                rxq->stats.batches++;
-                if (unlikely(very_verbose)) {
-                    sring_rxq_dump(rxq->ctx.rx);
-                }
+            if (unlikely(very_verbose && count > 0)) {
+                sring_rxq_dump(rxq->ctx.rx);
             }
         }
 
@@ -852,15 +858,14 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
         for (i = TXI_BEGIN(be); i < TXI_END(be); i++) {
             BpfhvBackendQueue *txq = be->q + i;
             struct bpfhv_tx_context *ctx = txq->ctx.tx;
-            int notify = 0;
             size_t count;
 
             /* Disable further kicks and start processing. */
             sring_txq_notification(ctx, /*enable=*/0);
             can_send = 1;
-            count = sring_txq_drain(be, ctx, vnet_hdr_len,
-                                    &can_send, &notify);
-            if (notify) {
+            count = sring_txq_drain(be, txq, ctx, vnet_hdr_len,
+                                    &can_send);
+            if (txq->notify) {
                 txq->stats.irqs++;
                 eventfd_signal(txq->irqfd);
                 if (unlikely(very_verbose)) {
@@ -882,12 +887,8 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
                     poll_timeout = 0;
                 }
             }
-            if (count > 0) {
-                txq->stats.pkts += count;
-                txq->stats.batches++;
-                if (unlikely(very_verbose)) {
-                    sring_txq_dump(ctx);
-                }
+            if (unlikely(very_verbose && count > 0)) {
+                sring_txq_dump(ctx);
             }
         }
 
@@ -935,24 +936,19 @@ process_packets_spin(BpfhvBackend *be, size_t max_rx_pkt_size)
          * queue. */
         {
             BpfhvBackendQueue *rxq = be->q + 0;
-            int notify = 0;
             size_t count;
 
-            count = sring_rxq_push(be, rxq->ctx.rx, max_rx_pkt_size,
-                           vnet_hdr_len, /*can_receive=*/NULL, &notify);
-            if (notify) {
+            count = sring_rxq_push(be, rxq, rxq->ctx.rx, max_rx_pkt_size,
+                           vnet_hdr_len, /*can_receive=*/NULL);
+            if (rxq->notify) {
                 rxq->stats.irqs++;
                 eventfd_signal(rxq->irqfd);
                 if (unlikely(very_verbose)) {
                     printf("Interrupt on %s\n", rxq->name);
                 }
             }
-            if (count > 0) {
-                rxq->stats.pkts += count;
-                rxq->stats.batches++;
-                if (unlikely(very_verbose)) {
-                    sring_rxq_dump(rxq->ctx.rx);
-                }
+            if (unlikely(very_verbose && count > 0)) {
+                sring_rxq_dump(rxq->ctx.rx);
             }
         }
 
@@ -960,24 +956,19 @@ process_packets_spin(BpfhvBackend *be, size_t max_rx_pkt_size)
          * to the TAP interface. */
         for (i = TXI_BEGIN(be); i < TXI_END(be); i++) {
             BpfhvBackendQueue *txq = be->q + i;
-            int notify = 0;
             size_t count;
 
-            count = sring_txq_drain(be, txq->ctx.tx, vnet_hdr_len,
-                            /*can_send=*/NULL, &notify);
-            if (notify) {
+            count = sring_txq_drain(be, txq, txq->ctx.tx, vnet_hdr_len,
+                                    /*can_send=*/NULL);
+            if (txq->notify) {
                 txq->stats.irqs++;
                 eventfd_signal(txq->irqfd);
                 if (unlikely(very_verbose)) {
                     printf("Interrupt on %s\n", txq->name);
                 }
             }
-            if (count > 0) {
-                txq->stats.pkts += count;
-                txq->stats.batches++;
-                if (unlikely(very_verbose)) {
-                    sring_txq_dump(txq->ctx.tx);
-                }
+            if (unlikely(very_verbose && count > 0)) {
+                sring_txq_dump(txq->ctx.tx);
             }
         }
     }
@@ -1053,13 +1044,12 @@ backend_drain(BpfhvBackend *be)
     for (i = TXI_BEGIN(be); i < TXI_END(be); i++) {
         BpfhvBackendQueue *txq = be->q + i;
         size_t drained = 0;
-        int notify = 0;
 
         for (;;) {
             size_t count;
 
-            count = sring_txq_drain(be, txq->ctx.tx, be->vnet_hdr_len,
-                                    /*can_send=*/NULL, &notify);
+            count = sring_txq_drain(be, txq, txq->ctx.tx, be->vnet_hdr_len,
+                                    /*can_send=*/NULL);
             drained += count;
             if (drained >= be->num_tx_bufs || count == 0) {
                 break;
