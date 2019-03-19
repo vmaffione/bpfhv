@@ -57,6 +57,7 @@ typedef struct BpfhvBackendMemoryRegion {
 } BpfhvBackendMemoryRegion;
 
 typedef struct BpfhvBackendQueueStats {
+    uint64_t    bufs;
     uint64_t    pkts;
     uint64_t    batches;
     uint64_t    kicks;
@@ -629,6 +630,7 @@ sring_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
                 rxd->flags |= SRING_DESC_F_NEEDS_CSUM;
             }
         }
+        rxq->stats.bufs += cons - cons_first;
     }
 
 out:
@@ -656,7 +658,7 @@ sring_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq,
     struct iovec iov[BPFHV_MAX_TX_BUFS+1];
     uint32_t prod = ACCESS_ONCE(priv->prod);
     uint32_t cons = priv->cons;
-    uint32_t first = cons;
+    uint32_t cons_first = cons;
     int iovcnt_start = vnet_hdr_len != 0 ? 1 : 0;
     int iovcnt = iovcnt_start;
     int count = 0;
@@ -707,9 +709,6 @@ sring_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq,
             }
 
             ret = be->send(be, iov, iovcnt);
-#if 0
-            printf("Transmitted iovcnt %u --> %d\n", iovcnt, ret);
-#endif
             if (unlikely(ret <= 0)) {
                 /* Backend is blocked (or failed), so we need to stop.
                  * The last packet was not transmitted, so we need to
@@ -722,16 +721,19 @@ sring_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq,
                                 strerror(errno));
                     }
                 }
-                cons = first;
+                cons = cons_first;
                 break;
             }
-
+#if 0
+            printf("Transmitted iovcnt %u --> %d\n", iovcnt, ret);
+#endif
+            txq->stats.bufs += cons - cons_first;
             if (++count >= BPFHV_BE_TX_BUDGET) {
                 break;
             }
 
             iovcnt = iovcnt_start;
-            first = cons;
+            cons_first = cons;
         }
 
         if (unlikely(cons == prod)) {
@@ -1082,7 +1084,7 @@ backend_stop(BpfhvBackend *be)
 }
 
 static void
-show_stats(BpfhvBackend *be)
+stats_show(BpfhvBackend *be)
 {
     struct timeval t;
     unsigned long udiff;
@@ -1097,23 +1099,27 @@ show_stats(BpfhvBackend *be)
     printf("Statistics:\n");
     for (i = 0; i < be->num_queues; i++) {
         BpfhvBackendQueue *q = be->q + i;
+        double dbufs = ACCESS_ONCE(q->stats.bufs) - q->pstats.bufs;
         double dpkts = ACCESS_ONCE(q->stats.pkts) - q->pstats.pkts;
         double dbatches = ACCESS_ONCE(q->stats.batches) - q->pstats.batches;
         double dkicks = ACCESS_ONCE(q->stats.kicks) - q->pstats.kicks;
         double dirqs = ACCESS_ONCE(q->stats.irqs) - q->pstats.irqs;
-        double avg_batch = 0.0;
+        double pkt_batch = 0.0;
+        double buf_batch = 0.0;
 
         q->pstats = q->stats;
+        dbufs /= mdiff;
         dpkts /= mdiff;
         dbatches /= mdiff;
         dkicks /= mdiff;
         dirqs /= mdiff;
         if (dbatches) {
-            avg_batch = dpkts / dbatches;
+            pkt_batch = dpkts / dbatches;
+            buf_batch = dbufs / dbatches;
         }
         printf("    %s: %4.3f Kpps, %4.3f Kkicks/s, %4.3f Kirqs/s, "
-               " avg_batch %3.1f\n",
-               q->name, dpkts, dkicks, dirqs, avg_batch);
+               " pkt_batch %3.1f buf_batch %3.1f\n",
+               q->name, dpkts, dkicks, dirqs, pkt_batch, buf_batch);
     }
 
     be->stats_ts = t;
@@ -1217,7 +1223,7 @@ main_loop(BpfhvBackend *be)
         if (n == 0) {
             /* Timeout. We need to compute and show statistics. */
             if (be->running) {
-                show_stats(be);
+                stats_show(be);
             }
             continue;
         } else if (n < 0) {
