@@ -2,7 +2,7 @@ KDIR ?= /lib/modules/`uname -r`/build
 
 LIBS = -lpthread
 DEFS =
-ifeq ($(WITH_NETMAP),yes)
+ifneq ($(WITH_NETMAP),)
 LIBS += -lnetmap
 DEFS += -DWITH_NETMAP
 endif
