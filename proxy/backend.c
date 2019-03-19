@@ -1122,7 +1122,7 @@ show_stats(BpfhvBackend *be)
             avg_batch = dpkts / dbatches;
         }
         printf("    %s: %4.3f Kpps, %4.3f Kkicks/s, %4.3f Kirqs/s, "
-               " avg_batch %3.0f\n",
+               " avg_batch %3.1f\n",
                q->name, dpkts, dkicks, dirqs, avg_batch);
     }
 
