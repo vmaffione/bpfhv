@@ -151,6 +151,9 @@ typedef struct BpfhvBackend {
     /* Virtio-net header length used by the TAP interface. */
     int vnet_hdr_len;
 
+    /* Use sleep() to improve fast consumer situations. */
+    int sleep_usecs;
+
 #ifdef WITH_NETMAP
     struct {
         struct nmport_d *port;
@@ -456,8 +459,8 @@ struct virtio_net_hdr_v1 {
     uint16_t num_buffers; /* Number of merged rx buffers */
 };
 
-#define BPFHV_BE_TX_BUDGET      64
-#define BPFHV_BE_RX_BUDGET      64
+#define BPFHV_BE_TX_BUDGET      128
+#define BPFHV_BE_RX_BUDGET      128
 
 static inline void
 sring_rxq_notification(struct bpfhv_rx_context *ctx, int enable)
@@ -779,6 +782,7 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
 {
     int vnet_hdr_len = be->vnet_hdr_len;
     int very_verbose = (verbose >= 2);
+    int sleep_usecs = be->sleep_usecs;
     struct pollfd *pfd_stop;
     struct pollfd *pfd_if;
     int poll_timeout = -1;
@@ -916,6 +920,10 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
             }
             break;
         }
+
+        if (sleep_usecs > 0) {
+            usleep(sleep_usecs);
+        }
     }
 
     free(pfd);
@@ -926,6 +934,7 @@ process_packets_spin(BpfhvBackend *be, size_t max_rx_pkt_size)
 {
     int vnet_hdr_len = be->vnet_hdr_len;
     int very_verbose = (verbose >= 2);
+    int sleep_usecs = be->sleep_usecs;
     unsigned int i;
 
     /* Disable all guest-->host notifications. */
@@ -975,6 +984,9 @@ process_packets_spin(BpfhvBackend *be, size_t max_rx_pkt_size)
             if (unlikely(very_verbose && count > 0)) {
                 sring_txq_dump(txq->ctx.tx);
             }
+        }
+        if (sleep_usecs > 0) {
+            usleep(sleep_usecs);
         }
     }
 }
@@ -1822,6 +1834,7 @@ usage(const char *progname)
            "    -G (enable TCP/UDP GSO offloads)\n"
            "    -B (run in busy-wait mode)\n"
            "    -S (show run-time statistics)\n"
+           "    -u MICROSECONDS (per iteration sleep)\n"
            "    -v (increase verbosity level)\n",
             progname);
 }
@@ -1846,7 +1859,7 @@ main(int argc, char **argv)
     be.befd = -1;
     be.collect_stats = 0;
 
-    while ((opt = getopt(argc, argv, "hp:P:f:i:CGBvb:S")) != -1) {
+    while ((opt = getopt(argc, argv, "hp:P:f:i:CGBvb:Su:")) != -1) {
         switch (opt) {
         case 'h':
             usage(argv[0]);
@@ -1899,6 +1912,14 @@ main(int argc, char **argv)
 
         case 'S':
             be.collect_stats = 1;
+            break;
+
+        case 'u':
+            be.sleep_usecs = atoi(optarg);
+            if (be.sleep_usecs < 0 || be.sleep_usecs > 1000) {
+                fprintf(stderr, "-u option value must be in [0, 1000]\n");
+                return -1;
+            }
             break;
         }
     }
