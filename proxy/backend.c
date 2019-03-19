@@ -74,6 +74,7 @@ typedef struct BpfhvBackendQueue {
     int notify;
     BpfhvBackendQueueStats stats;
     BpfhvBackendQueueStats pstats;
+    struct iovec *iov;
     char name[8];
 } BpfhvBackendQueue;
 
@@ -1358,6 +1359,24 @@ main_loop(BpfhvBackend *be)
         resp.hdr.reqtype = msg.hdr.reqtype;
         resp.hdr.flags = BPFHV_PROXY_VERSION;
 
+        /* Check if this request is acceptable while the backend
+         * is running. */
+        switch (msg.hdr.reqtype) {
+        case BPFHV_PROXY_REQ_SET_FEATURES:
+        case BPFHV_PROXY_REQ_SET_PARAMETERS:
+        case BPFHV_PROXY_REQ_SET_QUEUE_CTX:
+        case BPFHV_PROXY_REQ_SET_QUEUE_KICK:
+            if (be->running) {
+                fprintf(stderr, "Cannot accept request because backend "
+                                "is running\n");
+                resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
+                goto send_resp;
+            }
+            break;
+        default:
+            break;
+        }
+
         /* Process the request. */
         switch (msg.hdr.reqtype) {
         case BPFHV_PROXY_REQ_SET_FEATURES:
@@ -1693,6 +1712,7 @@ main_loop(BpfhvBackend *be)
             break;
         }
 
+send_resp:
         /* Send back the response. */
         {
             char control[CMSG_SPACE(BPFHV_PROXY_MAX_REGIONS * sizeof(fds[0]))];
