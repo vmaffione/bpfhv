@@ -1849,7 +1849,6 @@ usage(const char *progname)
            "    -P PID_FILE\n"
            "    -i INTERFACE_NAME\n"
            "    -b BACKEND_TYPE (tap,netmap)\n"
-           "    -f EBPF_PROGS_PATH\n"
            "    -C (enable checksum offloads)\n"
            "    -G (enable TCP/UDP GSO offloads)\n"
            "    -B (run in busy-wait mode)\n"
@@ -1874,12 +1873,11 @@ main(int argc, char **argv)
 
     be.backend = "tap";
     be.pidfile = NULL;
-    be.progfile = "proxy/sring_progs.o";
     be.busy_wait = 0;
     be.befd = -1;
     be.collect_stats = 0;
 
-    while ((opt = getopt(argc, argv, "hp:P:f:i:CGBvb:Su:")) != -1) {
+    while ((opt = getopt(argc, argv, "hp:P:i:CGBvb:Su:")) != -1) {
         switch (opt) {
         case 'h':
             usage(argv[0]);
@@ -1891,10 +1889,6 @@ main(int argc, char **argv)
 
         case 'P':
             be.pidfile = optarg;
-            break;
-
-        case 'f':
-            be.progfile = optarg;
             break;
 
         case 'i':
@@ -2034,12 +2028,14 @@ main(int argc, char **argv)
 
     be.cfd = cfd;
     be.features_avail = BPFHV_F_SG;
+    be.progfile = "proxy/sring_progs.o";
     if (csum) {
         be.features_avail |= BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM;
         if (gso) {
             be.features_avail |= BPFHV_F_TSOv4 | BPFHV_F_TCPv4_LRO
                               |  BPFHV_F_TSOv6 | BPFHV_F_TCPv6_LRO
                               |  BPFHV_F_UFO   | BPFHV_F_UDP_LRO;
+            be.progfile = "proxy/sring_progs_gso.o";
         }
     }
 

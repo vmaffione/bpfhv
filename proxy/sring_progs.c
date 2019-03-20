@@ -1,8 +1,6 @@
 #include "bpfhv.h"
 #include "sring.h"
 
-#define WITH_GSO
-
 #ifndef __section
 # define __section(NAME)                  \
    __attribute__((section(NAME), used))
