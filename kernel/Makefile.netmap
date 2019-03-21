@@ -1,0 +1,27 @@
+ifneq ($(KERNELRELEASE),)
+
+# bpfhv_src.c is just a symbolic link to bpfhv.c
+# This workaround is needed because when defining modulename-y
+# it is not possible to have a source called "modulename.c".
+# Note that this is a problem only when NETMAP_DRIVER_SUFFIX
+# is empty.
+EXTRA_CFLAGS += "${EXTRA_CFLAGS}"
+EXTRA_CFLAGS += -I$(PWD)/../include
+obj-m := bpfhv$(NETMAP_DRIVER_SUFFIX).o
+bpfhv$(NETMAP_DRIVER_SUFFIX)-y := bpfhv_src.o
+
+else
+
+KSRC ?= /lib/modules/$(shell uname -r)/build
+
+all: bpfhv.c
+	$(MAKE) -C "${KSRC}" M=$(shell pwd) modules
+
+install:
+	$(MAKE) -C "${KSRC}" M=$(shell pwd) modules_install
+
+clean:
+	$(MAKE) -C "${KSRC}" M=$(shell pwd) clean
+
+endif
+
