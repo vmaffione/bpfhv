@@ -86,6 +86,12 @@ typedef ssize_t (*BeRecvFun)(struct BpfhvBackend *be, const struct iovec *iov,
                              size_t iovcnt);
 typedef void (*BePostSendFun)(struct BpfhvBackend *be);
 
+
+typedef size_t (*BeRxqPushFun)(struct BpfhvBackend *be,
+                               BpfhvBackendQueue *rxq, int *can_receive);
+typedef size_t (*BeTxqDrainFun)(struct BpfhvBackend *be,
+                                BpfhvBackendQueue *txq, int *can_send);
+
 /* Main data structure supporting a single bpfhv vNIC. */
 typedef struct BpfhvBackend {
     /* A file containing the PID of this process. */
@@ -100,6 +106,10 @@ typedef struct BpfhvBackend {
 
     /* Backend type (tap, netmap). */
     const char *backend;
+
+    /* Functions that process receive and transmit queues. */
+    BeRxqPushFun rxqpush;
+    BeTxqDrainFun txqdrain;
 
     /* Set to 1 if we are collecting run-time statistics,
      * and timestamp useful to compute statistics. */
@@ -520,8 +530,9 @@ sring_txq_dump(struct bpfhv_tx_context *ctx)
 
 static size_t
 sring_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
-               struct bpfhv_rx_context *ctx, int *can_receive)
+               int *can_receive)
 {
+    struct bpfhv_rx_context *ctx = rxq->ctx.rx;
     struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
     size_t max_pkt_size = be->max_rx_pkt_size;
     int vnet_hdr_len = be->vnet_hdr_len;
@@ -661,9 +672,9 @@ out:
 }
 
 static size_t
-sring_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq,
-                struct bpfhv_tx_context *ctx, int *can_send)
+sring_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
 {
+    struct bpfhv_tx_context *ctx = txq->ctx.tx;
     struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
     struct iovec iov[BPFHV_MAX_TX_BUFS+1];
     uint32_t prod = ACCESS_ONCE(priv->prod);
@@ -785,6 +796,8 @@ sring_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq,
 static void
 process_packets_poll(BpfhvBackend *be)
 {
+    BeTxqDrainFun txqdrain = be->txqdrain;
+    BeRxqPushFun rxqpush = be->rxqpush;
     int very_verbose = (verbose >= 2);
     int sleep_usecs = be->sleep_usecs;
     struct pollfd *pfd_stop;
@@ -848,7 +861,7 @@ process_packets_poll(BpfhvBackend *be)
             size_t count;
 
             can_receive = 1;
-            count = sring_rxq_push(be, rxq, rxq->ctx.rx, &can_receive);
+            count = rxqpush(be, rxq, &can_receive);
             if (rxq->notify) {
                 rxq->stats.irqs++;
                 eventfd_signal(rxq->irqfd);
@@ -875,7 +888,7 @@ process_packets_poll(BpfhvBackend *be)
             /* Disable further kicks and start processing. */
             sring_txq_notification(ctx, /*enable=*/0);
             can_send = 1;
-            count = sring_txq_drain(be, txq, ctx, &can_send);
+            count = txqdrain(be, txq, &can_send);
             if (txq->notify) {
                 txq->stats.irqs++;
                 eventfd_signal(txq->irqfd);
@@ -934,6 +947,8 @@ process_packets_poll(BpfhvBackend *be)
 static void
 process_packets_spin(BpfhvBackend *be)
 {
+    BeTxqDrainFun txqdrain = be->txqdrain;
+    BeRxqPushFun rxqpush = be->rxqpush;
     int very_verbose = (verbose >= 2);
     int sleep_usecs = be->sleep_usecs;
     unsigned int i;
@@ -953,8 +968,7 @@ process_packets_spin(BpfhvBackend *be)
             BpfhvBackendQueue *rxq = be->q + 0;
             size_t count;
 
-            count = sring_rxq_push(be, rxq, rxq->ctx.rx,
-                                   /*can_receive=*/NULL);
+            count = rxqpush(be, rxq, /*can_receive=*/NULL);
             if (rxq->notify) {
                 rxq->stats.irqs++;
                 eventfd_signal(rxq->irqfd);
@@ -973,7 +987,7 @@ process_packets_spin(BpfhvBackend *be)
             BpfhvBackendQueue *txq = be->q + i;
             size_t count;
 
-            count = sring_txq_drain(be, txq, txq->ctx.tx, /*can_send=*/NULL);
+            count = txqdrain(be, txq, /*can_send=*/NULL);
             if (txq->notify) {
                 txq->stats.irqs++;
                 eventfd_signal(txq->irqfd);
@@ -1057,8 +1071,7 @@ backend_drain(BpfhvBackend *be)
         for (;;) {
             size_t count;
 
-            count = sring_txq_drain(be, txq, txq->ctx.tx,
-                                    /*can_send=*/NULL);
+            count = be->txqdrain(be, txq, /*can_send=*/NULL);
             drained += count;
             if (drained >= be->num_tx_bufs || count == 0) {
                 break;
@@ -2028,6 +2041,8 @@ main(int argc, char **argv)
     be.cfd = cfd;
     be.features_avail = BPFHV_F_SG;
     be.progfile = "proxy/sring_progs.o";
+    be.rxqpush = sring_rxq_push;
+    be.txqdrain = sring_txq_drain;
     if (csum) {
         be.features_avail |= BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM;
         if (gso) {
@@ -2035,6 +2050,8 @@ main(int argc, char **argv)
                               |  BPFHV_F_TSOv6 | BPFHV_F_TCPv6_LRO
                               |  BPFHV_F_UFO   | BPFHV_F_UDP_LRO;
             be.progfile = "proxy/sring_progs_gso.o";
+            be.rxqpush = sring_rxq_push;
+            be.txqdrain = sring_txq_drain;
         }
     }
 
