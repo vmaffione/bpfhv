@@ -152,6 +152,9 @@ typedef struct BpfhvBackend {
     /* Virtio-net header length used by the TAP interface. */
     int vnet_hdr_len;
 
+    /* Maximum size of a received packet. */
+    size_t max_rx_pkt_size;
+
     /* Use sleep() to improve fast consumer situations. */
     int sleep_usecs;
 
@@ -517,10 +520,11 @@ sring_txq_dump(struct bpfhv_tx_context *ctx)
 
 static size_t
 sring_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
-               struct bpfhv_rx_context *ctx, size_t max_pkt_size,
-               int vnet_hdr_len, int *can_receive)
+               struct bpfhv_rx_context *ctx, int *can_receive)
 {
     struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
+    size_t max_pkt_size = be->max_rx_pkt_size;
+    int vnet_hdr_len = be->vnet_hdr_len;
     uint32_t prod = ACCESS_ONCE(priv->prod);
     uint32_t cons = priv->cons;
     struct iovec iov[BPFHV_MAX_RX_BUFS+1];
@@ -658,12 +662,12 @@ out:
 
 static size_t
 sring_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq,
-                struct bpfhv_tx_context *ctx, int vnet_hdr_len,
-                int *can_send)
+                struct bpfhv_tx_context *ctx, int *can_send)
 {
     struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
     struct iovec iov[BPFHV_MAX_TX_BUFS+1];
     uint32_t prod = ACCESS_ONCE(priv->prod);
+    int vnet_hdr_len = be->vnet_hdr_len;
     uint32_t cons = priv->cons;
     uint32_t cons_first = cons;
     int iovcnt_start = vnet_hdr_len != 0 ? 1 : 0;
@@ -779,9 +783,8 @@ sring_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq,
 }
 
 static void
-process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
+process_packets_poll(BpfhvBackend *be)
 {
-    int vnet_hdr_len = be->vnet_hdr_len;
     int very_verbose = (verbose >= 2);
     int sleep_usecs = be->sleep_usecs;
     struct pollfd *pfd_stop;
@@ -845,8 +848,7 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
             size_t count;
 
             can_receive = 1;
-            count = sring_rxq_push(be, rxq, rxq->ctx.rx, max_rx_pkt_size,
-                                   vnet_hdr_len, &can_receive);
+            count = sring_rxq_push(be, rxq, rxq->ctx.rx, &can_receive);
             if (rxq->notify) {
                 rxq->stats.irqs++;
                 eventfd_signal(rxq->irqfd);
@@ -873,8 +875,7 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
             /* Disable further kicks and start processing. */
             sring_txq_notification(ctx, /*enable=*/0);
             can_send = 1;
-            count = sring_txq_drain(be, txq, ctx, vnet_hdr_len,
-                                    &can_send);
+            count = sring_txq_drain(be, txq, ctx, &can_send);
             if (txq->notify) {
                 txq->stats.irqs++;
                 eventfd_signal(txq->irqfd);
@@ -931,9 +932,8 @@ process_packets_poll(BpfhvBackend *be, size_t max_rx_pkt_size)
 }
 
 static void
-process_packets_spin(BpfhvBackend *be, size_t max_rx_pkt_size)
+process_packets_spin(BpfhvBackend *be)
 {
-    int vnet_hdr_len = be->vnet_hdr_len;
     int very_verbose = (verbose >= 2);
     int sleep_usecs = be->sleep_usecs;
     unsigned int i;
@@ -953,8 +953,8 @@ process_packets_spin(BpfhvBackend *be, size_t max_rx_pkt_size)
             BpfhvBackendQueue *rxq = be->q + 0;
             size_t count;
 
-            count = sring_rxq_push(be, rxq, rxq->ctx.rx, max_rx_pkt_size,
-                           vnet_hdr_len, /*can_receive=*/NULL);
+            count = sring_rxq_push(be, rxq, rxq->ctx.rx,
+                                   /*can_receive=*/NULL);
             if (rxq->notify) {
                 rxq->stats.irqs++;
                 eventfd_signal(rxq->irqfd);
@@ -973,8 +973,7 @@ process_packets_spin(BpfhvBackend *be, size_t max_rx_pkt_size)
             BpfhvBackendQueue *txq = be->q + i;
             size_t count;
 
-            count = sring_txq_drain(be, txq, txq->ctx.tx, vnet_hdr_len,
-                                    /*can_send=*/NULL);
+            count = sring_txq_drain(be, txq, txq->ctx.tx, /*can_send=*/NULL);
             if (txq->notify) {
                 txq->stats.irqs++;
                 eventfd_signal(txq->irqfd);
@@ -996,23 +995,15 @@ static void *
 process_packets(void *opaque)
 {
     BpfhvBackend *be = opaque;
-    size_t max_rx_pkt_size;
 
     if (verbose) {
         printf("Thread started\n");
     }
 
-    if (be->features_sel &
-        (BPFHV_F_TCPv4_LRO | BPFHV_F_TCPv6_LRO | BPFHV_F_UDP_LRO)) {
-        max_rx_pkt_size = 65536;
-    } else {
-        max_rx_pkt_size = 1518;
-    }
-
     if (be->busy_wait) {
-        process_packets_spin(be, max_rx_pkt_size);
+        process_packets_spin(be);
     } else {
-        process_packets_poll(be, max_rx_pkt_size);
+        process_packets_poll(be);
     }
 
     return NULL;
@@ -1066,7 +1057,7 @@ backend_drain(BpfhvBackend *be)
         for (;;) {
             size_t count;
 
-            count = sring_txq_drain(be, txq, txq->ctx.tx, be->vnet_hdr_len,
+            count = sring_txq_drain(be, txq, txq->ctx.tx,
                                     /*can_send=*/NULL);
             drained += count;
             if (drained >= be->num_tx_bufs || count == 0) {
@@ -1384,6 +1375,14 @@ main_loop(BpfhvBackend *be)
             if (verbose) {
                 printf("Negotiated features %"PRIx64"\n", be->features_sel);
             }
+            if (be->features_sel &
+                    (BPFHV_F_TCPv4_LRO | BPFHV_F_TCPv6_LRO | BPFHV_F_UDP_LRO)) {
+                be->max_rx_pkt_size = 65536;
+            } else {
+                be->max_rx_pkt_size = 1518;
+            }
+            /* TODO We should also set be->vnet_hdr_len here ... */
+
             break;
 
         case BPFHV_PROXY_REQ_GET_FEATURES:
