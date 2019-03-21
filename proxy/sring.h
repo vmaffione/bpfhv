@@ -24,22 +24,11 @@
 
 #include <stdint.h>
 
-#define SRING_DESC_F_EOP            (1 << 0)
-#define SRING_DESC_F_NEEDS_CSUM     (1 << 1)
-
 struct sring_tx_desc {
     uint64_t cookie;
     uint64_t paddr;
-    uint16_t len;
-    uint16_t flags;
-    /* Checksum offloads. */
-    uint16_t csum_start;
-    uint16_t csum_offset;
-    /* TSO, UFO and LRO. */
-    uint16_t hdr_len;
-    uint16_t gso_size;
-    uint16_t gso_type;
-    uint16_t reserved;
+    uint32_t len;
+    uint32_t pad;
 };
 
 struct sring_tx_context {
@@ -67,16 +56,8 @@ struct sring_tx_context {
 struct sring_rx_desc {
     uint64_t cookie;
     uint64_t paddr;
-    uint16_t len;
-    uint16_t flags;
-    /* Checksum offloads. */
-    uint16_t csum_start;
-    uint16_t csum_offset;
-    /* TSO, UFO and LRO. */
-    uint16_t gso_size;
-    uint16_t hdr_len;
-    uint16_t gso_type;
-    uint16_t reserved;
+    uint32_t len;
+    uint32_t pad;
 };
 
 struct sring_rx_context {

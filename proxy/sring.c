@@ -158,7 +158,6 @@ sring_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
         if (unlikely(iov.iov_base == NULL)) {
             /* Invalid descriptor. */
             rxd->len = 0;
-            rxd->flags = 0;
             if (verbose) {
                 fprintf(stderr, "Invalid RX descriptor: gpa%"PRIx64", "
                                 "len %u\n", rxd->paddr, rxd->len);
@@ -180,7 +179,6 @@ sring_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
         }
 
         /* Write back to the receive descriptor effectively used. */
-        rxd->flags = SRING_DESC_F_EOP;
         rxd->len = pktsize;
         rxq->stats.bufs++;
         cons++;

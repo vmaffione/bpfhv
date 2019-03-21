@@ -1,5 +1,5 @@
 #include "bpfhv.h"
-#include "sring.h"
+#include "sring_gso.h"
 
 #ifndef __section
 # define __section(NAME)                  \
@@ -47,11 +47,11 @@ static int BPFHV_FUNC(smp_mb_full);
 #define smp_mb_acquire()    compiler_barrier()
 
 __section("txp")
-int sring_txp(struct bpfhv_tx_context *ctx)
+int sring_gso_txp(struct bpfhv_tx_context *ctx)
 {
-    struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
+    struct sring_gso_tx_context *priv = (struct sring_gso_tx_context *)ctx->opaque;
     uint32_t prod = priv->prod;
-    struct sring_tx_desc *txd;
+    struct sring_gso_tx_desc *txd;
     uint32_t i;
 
     if (ctx->num_bufs > BPFHV_MAX_TX_BUFS) {
@@ -101,14 +101,14 @@ int sring_txp(struct bpfhv_tx_context *ctx)
 }
 
 static inline uint32_t
-sring_tx_get_one(struct bpfhv_tx_context *ctx,
-                 struct sring_tx_context *priv, uint32_t start)
+sring_gso_tx_get_one(struct bpfhv_tx_context *ctx,
+                 struct sring_gso_tx_context *priv, uint32_t start)
 {
     uint32_t i;
 
     for (i = 0; i < BPFHV_MAX_TX_BUFS; ) {
         struct bpfhv_tx_buf *txb = ctx->bufs + i;
-        struct sring_tx_desc *txd;
+        struct sring_gso_tx_desc *txd;
 
         txd = priv->desc + (start & priv->qmask);
         start++;
@@ -127,9 +127,9 @@ sring_tx_get_one(struct bpfhv_tx_context *ctx,
 }
 
 __section("txc")
-int sring_txc(struct bpfhv_tx_context *ctx)
+int sring_gso_txc(struct bpfhv_tx_context *ctx)
 {
-    struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
+    struct sring_gso_tx_context *priv = (struct sring_gso_tx_context *)ctx->opaque;
     uint32_t clear = priv->clear;
     uint32_t cons = ACCESS_ONCE(priv->cons);
 
@@ -137,19 +137,19 @@ int sring_txc(struct bpfhv_tx_context *ctx)
         return 0;
     }
     /* Make sure load from priv->cons happen before load from sring
-     * entries in sring_tx_get_one(). */
+     * entries in sring_gso_tx_get_one(). */
     smp_mb_acquire();
 
-    priv->clear = sring_tx_get_one(ctx, priv, clear);
+    priv->clear = sring_gso_tx_get_one(ctx, priv, clear);
     ctx->oflags = 0;
 
     return 1;
 }
 
 __section("txr")
-int sring_txr(struct bpfhv_tx_context *ctx)
+int sring_gso_txr(struct bpfhv_tx_context *ctx)
 {
-    struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
+    struct sring_gso_tx_context *priv = (struct sring_gso_tx_context *)ctx->opaque;
     uint32_t cons = ACCESS_ONCE(priv->cons);
     uint32_t prod = priv->prod;
 
@@ -158,16 +158,16 @@ int sring_txr(struct bpfhv_tx_context *ctx)
     }
     smp_mb_acquire();
 
-    ACCESS_ONCE(priv->cons) = priv->clear = sring_tx_get_one(ctx, priv, cons);
+    ACCESS_ONCE(priv->cons) = priv->clear = sring_gso_tx_get_one(ctx, priv, cons);
     ctx->oflags = 0;
 
     return 1;
 }
 
 __section("txi")
-int sring_txi(struct bpfhv_tx_context *ctx)
+int sring_gso_txi(struct bpfhv_tx_context *ctx)
 {
-    struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
+    struct sring_gso_tx_context *priv = (struct sring_gso_tx_context *)ctx->opaque;
     uint32_t ncompl;
     uint32_t cons;
 
@@ -194,11 +194,11 @@ int sring_txi(struct bpfhv_tx_context *ctx)
 }
 
 __section("rxp")
-int sring_rxp(struct bpfhv_rx_context *ctx)
+int sring_gso_rxp(struct bpfhv_rx_context *ctx)
 {
-    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
+    struct sring_gso_rx_context *priv = (struct sring_gso_rx_context *)ctx->opaque;
     uint32_t prod = priv->prod;
-    struct sring_rx_desc *rxd;
+    struct sring_gso_rx_desc *rxd;
     uint32_t i;
 
     if (ctx->num_bufs > BPFHV_MAX_RX_BUFS) {
@@ -229,12 +229,12 @@ int sring_rxp(struct bpfhv_rx_context *ctx)
 }
 
 __section("rxc")
-int sring_rxc(struct bpfhv_rx_context *ctx)
+int sring_gso_rxc(struct bpfhv_rx_context *ctx)
 {
-    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
+    struct sring_gso_rx_context *priv = (struct sring_gso_rx_context *)ctx->opaque;
     uint32_t clear = priv->clear;
     uint32_t cons = ACCESS_ONCE(priv->cons);
-    struct sring_rx_desc *rxd;
+    struct sring_gso_rx_desc *rxd;
     uint32_t i;
     int ret;
 
@@ -297,9 +297,9 @@ int sring_rxc(struct bpfhv_rx_context *ctx)
 }
 
 __section("rxr")
-int sring_rxr(struct bpfhv_rx_context *ctx)
+int sring_gso_rxr(struct bpfhv_rx_context *ctx)
 {
-    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
+    struct sring_gso_rx_context *priv = (struct sring_gso_rx_context *)ctx->opaque;
     uint32_t cons = ACCESS_ONCE(priv->cons);
     uint32_t prod = priv->prod;
     uint32_t i = 0;
@@ -311,7 +311,7 @@ int sring_rxr(struct bpfhv_rx_context *ctx)
 
     for (; cons != prod && i < BPFHV_MAX_RX_BUFS; i++) {
         struct bpfhv_rx_buf *rxb = ctx->bufs + i;
-        struct sring_rx_desc *rxd;
+        struct sring_gso_rx_desc *rxd;
 
         rxd = priv->desc + (cons & priv->qmask);
         cons++;
@@ -328,9 +328,9 @@ int sring_rxr(struct bpfhv_rx_context *ctx)
 }
 
 __section("rxi")
-int sring_rxi(struct bpfhv_rx_context *ctx)
+int sring_gso_rxi(struct bpfhv_rx_context *ctx)
 {
-    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
+    struct sring_gso_rx_context *priv = (struct sring_gso_rx_context *)ctx->opaque;
     uint32_t ncompl;
     uint32_t cons;
 
