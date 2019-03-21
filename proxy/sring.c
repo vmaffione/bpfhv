@@ -288,16 +288,16 @@ sring_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
 }
 
 BeOps sring_ops = {
-    .rxctxsize = sring_rx_ctx_size,
-    .txctxsize = sring_tx_ctx_size,
-    .rxctxinit = sring_rx_ctx_init,
-    .txctxinit = sring_tx_ctx_init,
-    .rxqpush = sring_rxq_push,
-    .txqdrain = sring_txq_drain,
-    .rxqkicks = sring_rxq_notification,
-    .txqkicks = sring_txq_notification,
-    .txqpending = sring_txq_pending,
-    .rxqdump = sring_rxq_dump,
-    .txqdump = sring_txq_dump,
+    .rx_ctx_size = sring_rx_ctx_size,
+    .tx_ctx_size = sring_tx_ctx_size,
+    .rx_ctx_init = sring_rx_ctx_init,
+    .tx_ctx_init = sring_tx_ctx_init,
+    .rxq_push = sring_rxq_push,
+    .txq_drain = sring_txq_drain,
+    .rxq_kicks = sring_rxq_notification,
+    .txq_kicks = sring_txq_notification,
+    .txq_pending = sring_txq_pending,
+    .rxq_dump = sring_rxq_dump,
+    .txq_dump = sring_txq_dump,
     .progfile = "proxy/sring_progs.o",
 };

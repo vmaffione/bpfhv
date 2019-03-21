@@ -60,19 +60,19 @@ typedef ssize_t (*BeRecvFun)(struct BpfhvBackend *be, const struct iovec *iov,
 typedef void (*BePostSendFun)(struct BpfhvBackend *be);
 
 typedef struct BeOps {
-    size_t (*rxctxsize)(size_t num_rx_bufs);
-    size_t (*txctxsize)(size_t num_rx_bufs);
-    void (*rxctxinit)(struct bpfhv_rx_context *ctx, size_t num_rx_bufs);
-    void (*txctxinit)(struct bpfhv_tx_context *ctx, size_t num_tx_bufs);
-    size_t (*rxqpush)(struct BpfhvBackend *be,
+    size_t (*rx_ctx_size)(size_t num_rx_bufs);
+    size_t (*tx_ctx_size)(size_t num_rx_bufs);
+    void (*rx_ctx_init)(struct bpfhv_rx_context *ctx, size_t num_rx_bufs);
+    void (*tx_ctx_init)(struct bpfhv_tx_context *ctx, size_t num_tx_bufs);
+    size_t (*rxq_push)(struct BpfhvBackend *be,
                       BpfhvBackendQueue *rxq, int *can_receive);
-    size_t (*txqdrain)(struct BpfhvBackend *be,
+    size_t (*txq_drain)(struct BpfhvBackend *be,
                        BpfhvBackendQueue *txq, int *can_send);
-    void (*rxqkicks)(struct bpfhv_rx_context *ctx, int enable);
-    void (*txqkicks)(struct bpfhv_tx_context *ctx, int enable);
-    int (*txqpending)(struct bpfhv_tx_context *ctx);
-    void (*rxqdump)(struct bpfhv_rx_context *ctx);
-    void (*txqdump)(struct bpfhv_tx_context *ctx);
+    void (*rxq_kicks)(struct bpfhv_rx_context *ctx, int enable);
+    void (*txq_kicks)(struct bpfhv_tx_context *ctx, int enable);
+    int (*txq_pending)(struct bpfhv_tx_context *ctx);
+    void (*rxq_dump)(struct bpfhv_rx_context *ctx);
+    void (*txq_dump)(struct bpfhv_tx_context *ctx);
 
     /* Path of the object file containing the ebpf programs. */
     char *progfile;

@@ -378,16 +378,16 @@ sring_gso_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
 }
 
 BeOps sring_gso_ops = {
-    .rxctxsize = sring_gso_rx_ctx_size,
-    .txctxsize = sring_gso_tx_ctx_size,
-    .rxctxinit = sring_gso_rx_ctx_init,
-    .txctxinit = sring_gso_tx_ctx_init,
-    .rxqpush = sring_gso_rxq_push,
-    .txqdrain = sring_gso_txq_drain,
-    .rxqkicks = sring_gso_rxq_notification,
-    .txqkicks = sring_gso_txq_notification,
-    .txqpending = sring_gso_txq_pending,
-    .rxqdump = sring_gso_rxq_dump,
-    .txqdump = sring_gso_txq_dump,
+    .rx_ctx_size = sring_gso_rx_ctx_size,
+    .tx_ctx_size = sring_gso_tx_ctx_size,
+    .rx_ctx_init = sring_gso_rx_ctx_init,
+    .tx_ctx_init = sring_gso_tx_ctx_init,
+    .rxq_push = sring_gso_rxq_push,
+    .txq_drain = sring_gso_txq_drain,
+    .rxq_kicks = sring_gso_rxq_notification,
+    .txq_kicks = sring_gso_txq_notification,
+    .txq_pending = sring_gso_txq_pending,
+    .rxq_dump = sring_gso_rxq_dump,
+    .txq_dump = sring_gso_txq_dump,
     .progfile = "proxy/sring_gso_progs.o",
 };

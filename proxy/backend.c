@@ -260,10 +260,10 @@ process_packets_poll(BpfhvBackend *be)
 
     /* Start with guest-->host notifications enabled. */
     for (i = RXI_BEGIN(be); i < RXI_END(be); i++) {
-        ops.rxqkicks(be->q[i].ctx.rx, /*enable=*/1);
+        ops.rxq_kicks(be->q[i].ctx.rx, /*enable=*/1);
     }
     for (i = TXI_BEGIN(be); i < TXI_END(be); i++) {
-        ops.txqkicks(be->q[i].ctx.tx, /*enable=*/1);
+        ops.txq_kicks(be->q[i].ctx.tx, /*enable=*/1);
     }
 
     /* Only single-queue is support for now. */
@@ -294,7 +294,7 @@ process_packets_poll(BpfhvBackend *be)
             size_t count;
 
             can_receive = 1;
-            count = ops.rxqpush(be, rxq, &can_receive);
+            count = ops.rxq_push(be, rxq, &can_receive);
             if (rxq->notify) {
                 rxq->stats.irqs++;
                 eventfd_signal(rxq->irqfd);
@@ -308,7 +308,7 @@ process_packets_poll(BpfhvBackend *be)
                 poll_timeout = 0;
             }
             if (unlikely(very_verbose && count > 0)) {
-                ops.rxqdump(rxq->ctx.rx);
+                ops.rxq_dump(rxq->ctx.rx);
             }
         }
 
@@ -319,9 +319,9 @@ process_packets_poll(BpfhvBackend *be)
             size_t count;
 
             /* Disable further kicks and start processing. */
-            ops.txqkicks(ctx, /*enable=*/0);
+            ops.txq_kicks(ctx, /*enable=*/0);
             can_send = 1;
-            count = ops.txqdrain(be, txq, &can_send);
+            count = ops.txq_drain(be, txq, &can_send);
             if (txq->notify) {
                 txq->stats.irqs++;
                 eventfd_signal(txq->irqfd);
@@ -336,16 +336,16 @@ process_packets_poll(BpfhvBackend *be)
             } else {
                 /* Re-enable notifications and double check for
                  * more work. */
-                ops.txqkicks(ctx, /*enable=*/1);
-                if (unlikely(ops.txqpending(ctx))) {
+                ops.txq_kicks(ctx, /*enable=*/1);
+                if (unlikely(ops.txq_pending(ctx))) {
                     /* More work found. We will process it in the
                      * next iteration. */
-                    ops.txqkicks(ctx, /*enable=*/0);
+                    ops.txq_kicks(ctx, /*enable=*/0);
                     poll_timeout = 0;
                 }
             }
             if (unlikely(very_verbose && count > 0)) {
-                ops.txqdump(ctx);
+                ops.txq_dump(ctx);
             }
         }
 
@@ -387,10 +387,10 @@ process_packets_spin(BpfhvBackend *be)
 
     /* Disable all guest-->host notifications. */
     for (i = RXI_BEGIN(be); i < RXI_END(be); i++) {
-        ops.rxqkicks(be->q[i].ctx.rx, /*enable=*/0);
+        ops.rxq_kicks(be->q[i].ctx.rx, /*enable=*/0);
     }
     for (i = TXI_BEGIN(be); i < TXI_END(be); i++) {
-        ops.txqkicks(be->q[i].ctx.tx, /*enable=*/0);
+        ops.txq_kicks(be->q[i].ctx.tx, /*enable=*/0);
     }
 
     while (ACCESS_ONCE(be->stopflag) == 0) {
@@ -400,7 +400,7 @@ process_packets_spin(BpfhvBackend *be)
             BpfhvBackendQueue *rxq = be->q + 0;
             size_t count;
 
-            count = ops.rxqpush(be, rxq, /*can_receive=*/NULL);
+            count = ops.rxq_push(be, rxq, /*can_receive=*/NULL);
             if (rxq->notify) {
                 rxq->stats.irqs++;
                 eventfd_signal(rxq->irqfd);
@@ -409,7 +409,7 @@ process_packets_spin(BpfhvBackend *be)
                 }
             }
             if (unlikely(very_verbose && count > 0)) {
-                ops.rxqdump(rxq->ctx.rx);
+                ops.rxq_dump(rxq->ctx.rx);
             }
         }
 
@@ -419,7 +419,7 @@ process_packets_spin(BpfhvBackend *be)
             BpfhvBackendQueue *txq = be->q + i;
             size_t count;
 
-            count = ops.txqdrain(be, txq, /*can_send=*/NULL);
+            count = ops.txq_drain(be, txq, /*can_send=*/NULL);
             if (txq->notify) {
                 txq->stats.irqs++;
                 eventfd_signal(txq->irqfd);
@@ -428,7 +428,7 @@ process_packets_spin(BpfhvBackend *be)
                 }
             }
             if (unlikely(very_verbose && count > 0)) {
-                ops.txqdump(txq->ctx.tx);
+                ops.txq_dump(txq->ctx.tx);
             }
         }
         if (sleep_usecs > 0) {
@@ -503,7 +503,7 @@ backend_drain(BpfhvBackend *be)
         for (;;) {
             size_t count;
 
-            count = be->ops.txqdrain(be, txq, /*can_send=*/NULL);
+            count = be->ops.txq_drain(be, txq, /*can_send=*/NULL);
             drained += count;
             if (drained >= be->num_tx_bufs || count == 0) {
                 break;
@@ -859,9 +859,9 @@ main_loop(BpfhvBackend *be)
 
                 resp.hdr.size = sizeof(resp.payload.ctx_sizes);
                 resp.payload.ctx_sizes.rx_ctx_size =
-                    be->ops.rxctxsize(be->num_rx_bufs);
+                    be->ops.rx_ctx_size(be->num_rx_bufs);
                 resp.payload.ctx_sizes.tx_ctx_size =
-                    be->ops.txctxsize(be->num_tx_bufs);
+                    be->ops.tx_ctx_size(be->num_tx_bufs);
 
                 for (i = RXI_BEGIN(be); i < RXI_END(be); i++) {
                     snprintf(be->q[i].name, sizeof(be->q[i].name),
@@ -980,9 +980,9 @@ main_loop(BpfhvBackend *be)
             }
 
             if (is_rx) {
-                ctx_size = be->ops.rxctxsize(be->num_rx_bufs);
+                ctx_size = be->ops.rx_ctx_size(be->num_rx_bufs);
             } else if (queue_idx < be->num_queues) {
-                ctx_size = be->ops.txctxsize(be->num_tx_bufs);
+                ctx_size = be->ops.tx_ctx_size(be->num_tx_bufs);
             }
 
             if (gpa != 0) {
@@ -1003,13 +1003,13 @@ main_loop(BpfhvBackend *be)
             if (is_rx) {
                 be->q[queue_idx].ctx.rx = (struct bpfhv_rx_context *)ctx;
                 if (ctx) {
-                    be->ops.rxctxinit(be->q[queue_idx].ctx.rx,
+                    be->ops.rx_ctx_init(be->q[queue_idx].ctx.rx,
                                       be->num_rx_bufs);
                 }
             } else {
                 be->q[queue_idx].ctx.tx = (struct bpfhv_tx_context *)ctx;
                 if (ctx) {
-                    be->ops.txctxinit(be->q[queue_idx].ctx.tx,
+                    be->ops.tx_ctx_init(be->q[queue_idx].ctx.tx,
                                       be->num_tx_bufs);
                 }
             }
