@@ -1,4 +1,4 @@
-KDIR ?= /lib/modules/`uname -r`/build
+KSRC ?= /lib/modules/`uname -r`/build
 
 LIBS = -lpthread
 DEFS =
@@ -10,7 +10,7 @@ endif
 all: proxy/backend proxy/sring_progs.o proxy/sring_gso_progs.o ker
 
 ker:
-	$(MAKE) -C $(KDIR) M=@SRCDIR@/kernel EXTRA_CFLAGS="-g -Werror -I@SRCDIR@/include" modules
+	$(MAKE) -C $(KSRC) M=@SRCDIR@/kernel EXTRA_CFLAGS="$(EXTRA_CFLAGS) -g -Werror -I@SRCDIR@/include" modules
 
 BESRCS=proxy/backend.c proxy/sring.c proxy/sring_gso.c
 BEHDRS=include/bpfhv-proxy.h include/bpfhv.h proxy/sring.h proxy/sring_gso.h proxy/backend.h
@@ -24,8 +24,13 @@ proxy/sring_progs.o: proxy/sring_progs.c proxy/sring.h include/bpfhv.h
 proxy/sring_gso_progs.o: proxy/sring_gso_progs.c proxy/sring_gso.h include/bpfhv.h
 	clang -O2 -Wall -DWITH_GSO -I @SRCDIR@/include -target bpf -c $< -o $@
 
+install: ker_install
+	$(MAKE) -C $(KSRC) M=@SRCDIR@/kernel EXTRA_CFLAGS="$(EXTRA_CFLAGS) -g -Werror -I@SRCDIR@/include" modules_install
+
+ker_install:
+
 clean: ker_clean
 	-rm proxy/*.o proxy/backend
 
 ker_clean:
-	$(MAKE) -C $(KDIR) M=@SRCDIR@/kernel clean
+	$(MAKE) -C $(KSRC) M=@SRCDIR@/kernel clean
