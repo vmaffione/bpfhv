@@ -534,6 +534,187 @@ sring_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
 {
     struct bpfhv_rx_context *ctx = rxq->ctx.rx;
     struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
+    uint32_t prod = ACCESS_ONCE(priv->prod);
+    uint32_t cons = priv->cons;
+    int count;
+
+    /* Make sure the load of from priv->prod is not delayed after the
+     * loads from the ring. */
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+
+    rxq->notify = 0;
+
+    if (unlikely(priv->kick_enabled)) {
+        sring_rxq_notification(ctx, /*enable=*/0);
+    }
+
+    for (count = 0; count < BPFHV_BE_RX_BUDGET; ) {
+        struct sring_rx_desc *rxd;
+        struct iovec iov;
+        int pktsize;
+
+        if (unlikely(cons == prod)) {
+            /* We ran out of RX descriptors. In busy-wait mode we can just
+             * bail out. Otherwise we enable RX kicks and double check for
+             * more available descriptors. */
+            if (can_receive == NULL) {
+                goto out;
+            }
+            sring_rxq_notification(ctx, /*enable=*/1);
+            prod = ACCESS_ONCE(priv->prod);
+            /* Make sure the load of from priv->prod is not delayed after the
+             * loads from the ring. */
+            __atomic_thread_fence(__ATOMIC_ACQUIRE);
+            if (cons == prod) {
+                /* Not enough space. We need to stop. */
+                *can_receive = 0;
+                goto out;
+            }
+            sring_rxq_notification(ctx, /*enable=*/0);
+        }
+
+        rxd = priv->desc + (cons & priv->qmask);
+        iov.iov_base = translate_addr(be, rxd->paddr, rxd->len);
+        if (unlikely(iov.iov_base == NULL)) {
+            /* Invalid descriptor. */
+            rxd->len = 0;
+            rxd->flags = 0;
+            if (verbose) {
+                fprintf(stderr, "Invalid RX descriptor: gpa%"PRIx64", "
+                                "len %u\n", rxd->paddr, rxd->len);
+            }
+            cons++;
+            continue;
+        }
+        iov.iov_len = rxd->len;
+
+        /* Read into the scatter-gather buffer referenced by the collected
+         * descriptors. */
+        pktsize = be->recv(be, &iov, 1);
+        if (pktsize <= 0) {
+            /* No more data to read (or error). We need to stop. */
+            if (unlikely(pktsize < 0 && errno != EAGAIN)) {
+                fprintf(stderr, "recv() failed: %s\n", strerror(errno));
+            }
+            break;
+        }
+
+        /* Write back to the receive descriptor effectively used. */
+        rxd->flags = SRING_DESC_F_EOP;
+        rxd->len = pktsize;
+        rxq->stats.bufs++;
+        cons++;
+        count++;
+    }
+
+out:
+    if (count > 0) {
+        /* Barrier between store(sring entries) and store(priv->cons). */
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+        priv->cons = cons;
+        /* Full memory barrier to ensure store(priv->cons) happens before
+         * load(priv->intr_enabled). See the double-check in sring_rxi().*/
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        rxq->notify = ACCESS_ONCE(priv->intr_enabled);
+        rxq->stats.pkts += count;
+        rxq->stats.batches++;
+    }
+
+    return count;
+}
+
+static size_t
+sring_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
+{
+    struct bpfhv_tx_context *ctx = txq->ctx.tx;
+    struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
+    uint32_t prod = ACCESS_ONCE(priv->prod);
+    uint32_t cons = priv->cons;
+    int count = 0;
+
+    /* Make sure the load of from priv->prod is not delayed after the
+     * loads from the ring. */
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+
+    txq->notify = 0;
+
+    for (count = 0; cons != prod && count < BPFHV_BE_TX_BUDGET; ) {
+        struct sring_tx_desc *txd = priv->desc + (cons & priv->qmask);
+        struct iovec iov;
+        int ret;
+
+        iov.iov_base = translate_addr(be, txd->paddr, txd->len);
+        iov.iov_len = txd->len;
+        if (unlikely(iov.iov_base == NULL)) {
+            /* Invalid descriptor, just skip it. */
+            if (verbose) {
+                fprintf(stderr, "Invalid TX descriptor: gpa%"PRIx64", "
+                                "len %u\n", txd->paddr, txd->len);
+            }
+            cons++;
+            continue;
+        }
+
+        ret = be->send(be, &iov, 1);
+        if (unlikely(ret <= 0)) {
+            /* Backend is blocked (or failed), so we need to stop.
+             * The last packet was not transmitted, so we don't
+             * increment 'cons'. */
+            if (ret < 0) {
+                if (can_send != NULL && errno == EAGAIN) {
+                    *can_send = 0;
+                } else if (verbose) {
+                    fprintf(stderr, "send() failed: %s\n",
+                            strerror(errno));
+                }
+            }
+            break;
+        }
+        txq->stats.bufs++;
+        count++;
+        cons++;
+
+        if (unlikely(cons == prod)) {
+            /* Before stopping, check if more work came while we were
+             * not looking at priv->prod. Note that double-check logic
+             * is done by the caller. */
+            prod = ACCESS_ONCE(priv->prod);
+            /* Make sure the load of from priv->prod is not delayed after the
+             * loads from the ring. */
+            __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        }
+    }
+
+    if (count > 0) {
+        uint32_t old_cons = priv->cons;
+        uint32_t intr_at;
+
+        if (be->postsend) {
+            be->postsend(be);
+        }
+
+        /* Barrier between stores to sring entries and store to priv->cons. */
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+        priv->cons = cons;
+        /* Full memory barrier to ensure store(priv->cons) happens before
+         * load(priv->intr_at). See the double-check in sring_txi(). */
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        intr_at = ACCESS_ONCE(priv->intr_at);
+        txq->notify =
+            (uint32_t)(cons - intr_at - 1) < (uint32_t)(cons - old_cons);
+        txq->stats.pkts += count;
+        txq->stats.batches++;
+    }
+
+    return count;
+}
+
+static size_t
+sring_gso_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
+               int *can_receive)
+{
+    struct bpfhv_rx_context *ctx = rxq->ctx.rx;
+    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
     size_t max_pkt_size = be->max_rx_pkt_size;
     int vnet_hdr_len = be->vnet_hdr_len;
     uint32_t prod = ACCESS_ONCE(priv->prod);
@@ -546,6 +727,10 @@ sring_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
 
     rxq->notify = 0;
+
+    if (unlikely(priv->kick_enabled)) {
+        sring_rxq_notification(ctx, /*enable=*/0);
+    }
 
     for (count = 0; count < BPFHV_BE_RX_BUDGET; count++) {
         struct virtio_net_hdr_v1 hdr;
@@ -602,7 +787,7 @@ sring_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
                 iovcnt++;
             }
             cons++;
-        } while (iovsize < max_pkt_size && iovcnt < BPFHV_MAX_TX_BUFS);
+        } while (iovsize < max_pkt_size && iovcnt < BPFHV_MAX_RX_BUFS);
 
         /* Read into the scatter-gather buffer referenced by the collected
          * descriptors. */
@@ -672,7 +857,7 @@ out:
 }
 
 static size_t
-sring_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
+sring_gso_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
 {
     struct bpfhv_tx_context *ctx = txq->ctx.tx;
     struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
@@ -2039,19 +2224,20 @@ main(int argc, char **argv)
     }
 
     be.cfd = cfd;
-    be.features_avail = BPFHV_F_SG;
+    be.features_avail = 0;
     be.progfile = "proxy/sring_progs.o";
     be.rxqpush = sring_rxq_push;
     be.txqdrain = sring_txq_drain;
     if (csum) {
+        be.features_avail = BPFHV_F_SG;
         be.features_avail |= BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM;
         if (gso) {
             be.features_avail |= BPFHV_F_TSOv4 | BPFHV_F_TCPv4_LRO
                               |  BPFHV_F_TSOv6 | BPFHV_F_TCPv6_LRO
                               |  BPFHV_F_UFO   | BPFHV_F_UDP_LRO;
             be.progfile = "proxy/sring_progs_gso.o";
-            be.rxqpush = sring_rxq_push;
-            be.txqdrain = sring_txq_drain;
+            be.rxqpush = sring_gso_rxq_push;
+            be.txqdrain = sring_gso_txq_drain;
         }
     }
 
