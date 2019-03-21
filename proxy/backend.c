@@ -76,6 +76,57 @@ tap_send(BpfhvBackend *be, const struct iovec *iov, size_t iovcnt)
     return writev(be->befd, iov, iovcnt);
 }
 
+static ssize_t
+sink_send(BpfhvBackend *be, const struct iovec *iov, size_t iovcnt)
+{
+    ssize_t bytes = 0;
+    unsigned int i;
+
+    for (i = 0; i < iovcnt; i++, iov++) {
+        bytes += iov->iov_len;
+    }
+
+    return bytes;
+}
+
+static ssize_t
+null_recv(BpfhvBackend *be, const struct iovec *iov, size_t iovcnt)
+{
+    return 0;  /* Nothing to read. */
+}
+
+static ssize_t
+source_recv(BpfhvBackend *be, const struct iovec *iov, size_t iovcnt)
+{
+    static const uint8_t udp_pkt[] = {
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x45, 0x10,
+        0x00, 0x2e, 0x00, 0x00, 0x40, 0x00, 0x40, 0x11, 0x26, 0xad, 0x0a, 0x00, 0x00, 0x01, 0x0a, 0x01,
+        0x00, 0x01, 0x04, 0xd2, 0x04, 0xd2, 0x00, 0x1a, 0x15, 0x80, 0x6e, 0x65, 0x74, 0x6d, 0x61, 0x70,
+        0x20, 0x70, 0x6b, 0x74, 0x2d, 0x67, 0x65, 0x6e, 0x20, 0x44, 0x49, 0x52,
+    };
+    unsigned int i = 0;
+    size_t ofs = 0;
+
+    if (be->vnet_hdr_len) {
+        assert(iov->iov_len == sizeof(struct virtio_net_hdr_v1));
+        memset(iov->iov_base, 0, iov->iov_len);
+        iov++;
+        i++;
+    }
+
+    for (; i < iovcnt && ofs < sizeof(udp_pkt); i++, iov++) {
+        size_t copy = sizeof(udp_pkt) - ofs;
+
+        if (copy > iov->iov_len) {
+            copy = iov->iov_len;
+        }
+        memcpy(iov->iov_base, udp_pkt + ofs, copy);
+        ofs += copy;
+    }
+
+    return ofs;
+}
+
 #ifdef WITH_NETMAP
 static ssize_t
 netmap_recv(BpfhvBackend *be, const struct iovec *iov, size_t iovcnt)
@@ -1292,7 +1343,7 @@ usage(const char *progname)
            "    -p UNIX_SOCKET_PATH\n"
            "    -P PID_FILE\n"
            "    -i INTERFACE_NAME\n"
-           "    -b BACKEND_TYPE (tap,netmap)\n"
+           "    -b BACKEND_TYPE (tap,sink,source,netmap)\n"
            "    -C (enable checksum offloads)\n"
            "    -G (enable TCP/UDP GSO offloads)\n"
            "    -B (run in busy-wait mode)\n"
@@ -1357,6 +1408,8 @@ main(int argc, char **argv)
 
         case 'b':
             if (strcmp(optarg, "tap")
+                && strcmp(optarg, "sink")
+                && strcmp(optarg, "source")
 #ifdef WITH_NETMAP
                 && strcmp(optarg, "netmap")
 #endif
@@ -1418,6 +1471,8 @@ main(int argc, char **argv)
         return ret;
     }
 
+    be.vnet_hdr_len = 0;
+    be.postsend = NULL;
     if (!strcmp(be.backend, "tap")) {
         /* Open a TAP device to use as network backend. */
         be.vnet_hdr_len = (csum || gso) ?
@@ -1429,12 +1484,26 @@ main(int argc, char **argv)
         }
         be.recv = tap_recv;
         be.send = tap_send;
-        be.postsend = NULL;
+    } else if (!strcmp(be.backend, "sink")) {
+        be.recv = null_recv;
+        be.send = sink_send;
+        be.befd = eventfd(0, 0);
+        if (be.befd < 0) {
+            fprintf(stderr, "Failed to allocate eventfd\n");
+            return -1;
+        }
+    } else if (!strcmp(be.backend, "source")) {
+        be.recv = source_recv;
+        be.send = sink_send;
+        be.befd = eventfd(1, 0);
+        if (be.befd < 0) {
+            fprintf(stderr, "Failed to allocate eventfd\n");
+            return -1;
+        }
     }
 #ifdef WITH_NETMAP
     else if (!strcmp(be.backend, "netmap")) {
         /* Open a netmap port to use as network backend. */
-        be.vnet_hdr_len = 0;
         csum = gso = 0;
         be.nm.port = nmport_open(ifname);
         if (be.nm.port == NULL) {
