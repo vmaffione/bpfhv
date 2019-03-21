@@ -1,5 +1,5 @@
 #!/bin/bash
 
 SRCDIR=$(dirname $(realpath $0))
-cp Makefile.in Makefile
-sed -i "s|@SRCDIR@|$SRCDIR|g" Makefile
+cp $SRCDIR/Makefile.in $SRCDIR/Makefile
+sed -i "s|@SRCDIR@|$SRCDIR|g" $SRCDIR/Makefile
