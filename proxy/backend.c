@@ -25,165 +25,9 @@
 #endif
 #include <linux/if.h>
 
-#include "bpfhv-proxy.h"
-#include "bpfhv.h"
-#include "sring.h"
+#include "backend.h"
 
-#ifndef likely
-#define likely(x)           __builtin_expect((x), 1)
-#endif
-#ifndef unlikely
-#define unlikely(x)         __builtin_expect((x), 0)
-#endif
-#ifndef ACCESS_ONCE
-#define ACCESS_ONCE(x) (*(volatile typeof(x) *)&(x))
-#endif
-#define compiler_barrier() __asm__ __volatile__ ("");
-
-#define MIN(a,b) ((a) < (b) ? (a) : (b))
-
-#define BPFHV_MAX_QUEUES        16
-
-static int verbose = 0;
-
-typedef struct BpfhvBackendMemoryRegion {
-    uint64_t    gpa_start;
-    uint64_t    gpa_end;
-    uint64_t    size;
-    uint64_t    hv_vaddr;
-    uint64_t    mmap_offset;
-    void        *mmap_addr;
-    void        *va_start;
-} BpfhvBackendMemoryRegion;
-
-typedef struct BpfhvBackendQueueStats {
-    uint64_t    bufs;
-    uint64_t    pkts;
-    uint64_t    batches;
-    uint64_t    kicks;
-    uint64_t    irqs;
-} BpfhvBackendQueueStats;
-
-typedef struct BpfhvBackendQueue {
-    union {
-        struct bpfhv_rx_context *rx;
-        struct bpfhv_tx_context *tx;
-    } ctx;
-    int kickfd;
-    int irqfd;
-    int notify;
-    BpfhvBackendQueueStats stats;
-    BpfhvBackendQueueStats pstats;
-    struct iovec *iov;
-    char name[8];
-} BpfhvBackendQueue;
-
-struct BpfhvBackend;
-
-typedef ssize_t (*BeSendFun)(struct BpfhvBackend *be, const struct iovec *iov,
-                             size_t iovcnt);
-typedef ssize_t (*BeRecvFun)(struct BpfhvBackend *be, const struct iovec *iov,
-                             size_t iovcnt);
-typedef void (*BePostSendFun)(struct BpfhvBackend *be);
-
-
-typedef size_t (*BeRxqPushFun)(struct BpfhvBackend *be,
-                               BpfhvBackendQueue *rxq, int *can_receive);
-typedef size_t (*BeTxqDrainFun)(struct BpfhvBackend *be,
-                                BpfhvBackendQueue *txq, int *can_send);
-
-/* Main data structure supporting a single bpfhv vNIC. */
-typedef struct BpfhvBackend {
-    /* A file containing the PID of this process. */
-    const char *pidfile;
-
-    /* Socket file descriptor to exchange control message with the
-     * hypervisor. */
-    int cfd;
-
-    /* Path of the object file containing the ebpf programs. */
-    const char *progfile;
-
-    /* Backend type (tap, netmap). */
-    const char *backend;
-
-    /* Functions that process receive and transmit queues. */
-    BeRxqPushFun rxqpush;
-    BeTxqDrainFun txqdrain;
-
-    /* Set to 1 if we are collecting run-time statistics,
-     * and timestamp useful to compute statistics. */
-    int collect_stats;
-    struct timeval stats_ts;
-
-    /* The features we support. */
-    uint64_t features_avail;
-
-    /* The features selected by the guest. */
-    uint64_t features_sel;
-
-    /* Set if the backend is working in busy wait mode. If unset,
-     * blocking synchronization is used. */
-    int busy_wait;
-
-    /* Guest memory map. */
-    BpfhvBackendMemoryRegion regions[BPFHV_PROXY_MAX_REGIONS];
-    size_t num_regions;
-
-    /* Queue parameters. */
-    unsigned int num_queue_pairs;
-    unsigned int num_rx_bufs;
-    unsigned int num_tx_bufs;
-
-    /* Total number of queues (twice as num_queue_pairs). */
-    unsigned int num_queues;
-
-    /* Flags defined for BPFHV_REG_STATUS. */
-    uint32_t status;
-
-    /* Is the backend running, (e.g. actively processing packets or
-     * waiting for more processing to come) ? */
-    unsigned int running;
-
-    /* An event file descriptor to signal in case of upgrades. */
-    int upgrade_fd;
-
-    /* Thread dedicated to packet processing. */
-    pthread_t th;
-
-    /* An eventfd useful to stop the processing thread. */
-    int stopfd;
-    int stopflag;
-
-    /* File descriptor of the TAP device or the netmap port
-     * (the real net backend). */
-    int befd;
-
-    /* Virtio-net header length used by the TAP interface. */
-    int vnet_hdr_len;
-
-    /* Maximum size of a received packet. */
-    size_t max_rx_pkt_size;
-
-    /* Use sleep() to improve fast consumer situations. */
-    int sleep_usecs;
-
-#ifdef WITH_NETMAP
-    struct {
-        struct nmport_d *port;
-        struct netmap_ring *txr;
-        struct netmap_ring *rxr;
-    } nm;
-#endif
-
-    /* Send and receive functions for real send/receive operations. */
-    BeSendFun send;
-    BeRecvFun recv;
-    BePostSendFun postsend;
-
-    /* RX and TX queues (in this order). */
-    BpfhvBackendQueue q[BPFHV_MAX_QUEUES];
-} BpfhvBackend;
+int verbose = 0;
 
 #define RXI_BEGIN(_s)   0
 #define RXI_END(_s)     (_s)->num_queue_pairs
@@ -218,36 +62,6 @@ eventfd_signal(int fd)
         assert(n < 0);
         fprintf(stderr, "read() failed: %s\n", strerror(errno));
     }
-}
-
-/* Translate guest physical address into host virtual address.
- * This is not thread-safe at the moment being. */
-static inline void *
-translate_addr(BpfhvBackend *be, uint64_t gpa, uint64_t len)
-{
-    BpfhvBackendMemoryRegion  *re = be->regions + 0;
-
-    if (unlikely(!(re->gpa_start <= gpa && gpa + len <= re->gpa_end))) {
-        int i;
-
-        for (i = 1; i < be->num_regions; i++) {
-            re = be->regions + i;
-            if (re->gpa_start <= gpa && gpa + len <= re->gpa_end) {
-                /* Match. Move this entry to the first position. */
-                BpfhvBackendMemoryRegion tmp = *re;
-
-                *re = be->regions[0];
-                be->regions[0] = tmp;
-                re = be->regions + 0;
-                break;
-            }
-        }
-        if (i >= be->num_regions) {
-            return NULL;
-        }
-    }
-
-    return re->va_start + (gpa - re->gpa_start);
 }
 
 static ssize_t
@@ -413,576 +227,10 @@ netmap_postsend(BpfhvBackend *be)
 }
 #endif
 
-/*
- * The sring implementation.
- */
-
-static size_t
-sring_rx_ctx_size(size_t num_rx_bufs)
-{
-    return sizeof(struct bpfhv_rx_context) + sizeof(struct sring_rx_context) +
-	num_rx_bufs * sizeof(struct sring_rx_desc);
-}
-
-static size_t
-sring_tx_ctx_size(size_t num_tx_bufs)
-{
-    return sizeof(struct bpfhv_tx_context) + sizeof(struct sring_tx_context) +
-	num_tx_bufs * sizeof(struct sring_tx_desc);
-}
-
-static void
-sring_rx_ctx_init(struct bpfhv_rx_context *ctx, size_t num_rx_bufs)
-{
-    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
-
-    assert((num_rx_bufs & (num_rx_bufs - 1)) == 0);
-    priv->qmask = num_rx_bufs - 1;
-    priv->prod = priv->cons = priv->clear = 0;
-    priv->kick_enabled = priv->intr_enabled = 1;
-    memset(priv->desc, 0, num_rx_bufs * sizeof(priv->desc[0]));
-}
-
-static void
-sring_tx_ctx_init(struct bpfhv_tx_context *ctx, size_t num_tx_bufs)
-{
-    struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
-
-    assert((num_tx_bufs & (num_tx_bufs - 1)) == 0);
-    priv->qmask = num_tx_bufs - 1;
-    priv->prod = priv->cons = priv->clear = 0;
-    priv->kick_enabled = 1;
-    priv->intr_at = 0;
-    memset(priv->desc, 0, num_tx_bufs * sizeof(priv->desc[0]));
-}
-
-struct virtio_net_hdr_v1 {
-#define VIRTIO_NET_HDR_F_NEEDS_CSUM     1       /* Use csum_start, csum_offset */
-#define VIRTIO_NET_HDR_F_DATA_VALID     2       /* Csum is valid */
-    uint8_t flags;
-#define VIRTIO_NET_HDR_GSO_NONE         0       /* Not a GSO frame */
-#define VIRTIO_NET_HDR_GSO_TCPV4        1       /* GSO frame, IPv4 TCP (TSO) */
-#define VIRTIO_NET_HDR_GSO_UDP          3       /* GSO frame, IPv4 UDP (UFO) */
-#define VIRTIO_NET_HDR_GSO_TCPV6        4       /* GSO frame, IPv6 TCP */
-#define VIRTIO_NET_HDR_GSO_ECN          0x80    /* TCP has ECN set */
-    uint8_t gso_type;
-    uint16_t hdr_len;     /* Ethernet + IP + tcp/udp hdrs */
-    uint16_t gso_size;    /* Bytes to append to hdr_len per frame */
-    uint16_t csum_start;  /* Position to start checksumming from */
-    uint16_t csum_offset; /* Offset after that to place checksum */
-    uint16_t num_buffers; /* Number of merged rx buffers */
-};
-
-#define BPFHV_BE_TX_BUDGET      128
-#define BPFHV_BE_RX_BUDGET      128
-
-static inline void
-sring_rxq_notification(struct bpfhv_rx_context *ctx, int enable)
-{
-    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
-
-    priv->kick_enabled = !!enable;
-    if (enable) {
-        __atomic_thread_fence(__ATOMIC_ACQUIRE);
-    }
-}
-
-static inline void
-sring_txq_notification(struct bpfhv_tx_context *ctx, int enable)
-{
-    struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
-
-    priv->kick_enabled = !!enable;
-    if (enable) {
-        __atomic_thread_fence(__ATOMIC_ACQUIRE);
-    }
-}
-
-static inline int
-sring_txq_pending(struct bpfhv_tx_context *ctx)
-{
-    struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
-
-    return priv->cons != ACCESS_ONCE(priv->prod);
-}
-
-static void
-sring_rxq_dump(struct bpfhv_rx_context *ctx)
-{
-    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
-
-    printf("sring.rxq cl %u co %u pr %u kick %u intr %u\n",
-           ACCESS_ONCE(priv->clear), ACCESS_ONCE(priv->cons),
-           ACCESS_ONCE(priv->prod), ACCESS_ONCE(priv->kick_enabled),
-           ACCESS_ONCE(priv->intr_enabled));
-}
-
-static void
-sring_txq_dump(struct bpfhv_tx_context *ctx)
-{
-    struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
-
-    printf("sring.txq cl %u co %u pr %u kick %u intr_at %u\n",
-           ACCESS_ONCE(priv->clear), ACCESS_ONCE(priv->cons),
-           ACCESS_ONCE(priv->prod), ACCESS_ONCE(priv->kick_enabled),
-           ACCESS_ONCE(priv->intr_at));
-}
-
-static size_t
-sring_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
-               int *can_receive)
-{
-    struct bpfhv_rx_context *ctx = rxq->ctx.rx;
-    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
-    uint32_t prod = ACCESS_ONCE(priv->prod);
-    uint32_t cons = priv->cons;
-    int count;
-
-    /* Make sure the load of from priv->prod is not delayed after the
-     * loads from the ring. */
-    __atomic_thread_fence(__ATOMIC_ACQUIRE);
-
-    rxq->notify = 0;
-
-    if (unlikely(priv->kick_enabled)) {
-        sring_rxq_notification(ctx, /*enable=*/0);
-    }
-
-    for (count = 0; count < BPFHV_BE_RX_BUDGET; ) {
-        struct sring_rx_desc *rxd;
-        struct iovec iov;
-        int pktsize;
-
-        if (unlikely(cons == prod)) {
-            /* We ran out of RX descriptors. In busy-wait mode we can just
-             * bail out. Otherwise we enable RX kicks and double check for
-             * more available descriptors. */
-            if (can_receive == NULL) {
-                goto out;
-            }
-            sring_rxq_notification(ctx, /*enable=*/1);
-            prod = ACCESS_ONCE(priv->prod);
-            /* Make sure the load of from priv->prod is not delayed after the
-             * loads from the ring. */
-            __atomic_thread_fence(__ATOMIC_ACQUIRE);
-            if (cons == prod) {
-                /* Not enough space. We need to stop. */
-                *can_receive = 0;
-                goto out;
-            }
-            sring_rxq_notification(ctx, /*enable=*/0);
-        }
-
-        rxd = priv->desc + (cons & priv->qmask);
-        iov.iov_base = translate_addr(be, rxd->paddr, rxd->len);
-        if (unlikely(iov.iov_base == NULL)) {
-            /* Invalid descriptor. */
-            rxd->len = 0;
-            rxd->flags = 0;
-            if (verbose) {
-                fprintf(stderr, "Invalid RX descriptor: gpa%"PRIx64", "
-                                "len %u\n", rxd->paddr, rxd->len);
-            }
-            cons++;
-            continue;
-        }
-        iov.iov_len = rxd->len;
-
-        /* Read into the scatter-gather buffer referenced by the collected
-         * descriptors. */
-        pktsize = be->recv(be, &iov, 1);
-        if (pktsize <= 0) {
-            /* No more data to read (or error). We need to stop. */
-            if (unlikely(pktsize < 0 && errno != EAGAIN)) {
-                fprintf(stderr, "recv() failed: %s\n", strerror(errno));
-            }
-            break;
-        }
-
-        /* Write back to the receive descriptor effectively used. */
-        rxd->flags = SRING_DESC_F_EOP;
-        rxd->len = pktsize;
-        rxq->stats.bufs++;
-        cons++;
-        count++;
-    }
-
-out:
-    if (count > 0) {
-        /* Barrier between store(sring entries) and store(priv->cons). */
-        __atomic_thread_fence(__ATOMIC_RELEASE);
-        priv->cons = cons;
-        /* Full memory barrier to ensure store(priv->cons) happens before
-         * load(priv->intr_enabled). See the double-check in sring_rxi().*/
-        __atomic_thread_fence(__ATOMIC_SEQ_CST);
-        rxq->notify = ACCESS_ONCE(priv->intr_enabled);
-        rxq->stats.pkts += count;
-        rxq->stats.batches++;
-    }
-
-    return count;
-}
-
-static size_t
-sring_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
-{
-    struct bpfhv_tx_context *ctx = txq->ctx.tx;
-    struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
-    uint32_t prod = ACCESS_ONCE(priv->prod);
-    uint32_t cons = priv->cons;
-    int count = 0;
-
-    /* Make sure the load of from priv->prod is not delayed after the
-     * loads from the ring. */
-    __atomic_thread_fence(__ATOMIC_ACQUIRE);
-
-    txq->notify = 0;
-
-    for (count = 0; cons != prod && count < BPFHV_BE_TX_BUDGET; ) {
-        struct sring_tx_desc *txd = priv->desc + (cons & priv->qmask);
-        struct iovec iov;
-        int ret;
-
-        iov.iov_base = translate_addr(be, txd->paddr, txd->len);
-        iov.iov_len = txd->len;
-        if (unlikely(iov.iov_base == NULL)) {
-            /* Invalid descriptor, just skip it. */
-            if (verbose) {
-                fprintf(stderr, "Invalid TX descriptor: gpa%"PRIx64", "
-                                "len %u\n", txd->paddr, txd->len);
-            }
-            cons++;
-            continue;
-        }
-
-        ret = be->send(be, &iov, 1);
-        if (unlikely(ret <= 0)) {
-            /* Backend is blocked (or failed), so we need to stop.
-             * The last packet was not transmitted, so we don't
-             * increment 'cons'. */
-            if (ret < 0) {
-                if (can_send != NULL && errno == EAGAIN) {
-                    *can_send = 0;
-                } else if (verbose) {
-                    fprintf(stderr, "send() failed: %s\n",
-                            strerror(errno));
-                }
-            }
-            break;
-        }
-        txq->stats.bufs++;
-        count++;
-        cons++;
-
-        if (unlikely(cons == prod)) {
-            /* Before stopping, check if more work came while we were
-             * not looking at priv->prod. Note that double-check logic
-             * is done by the caller. */
-            prod = ACCESS_ONCE(priv->prod);
-            /* Make sure the load of from priv->prod is not delayed after the
-             * loads from the ring. */
-            __atomic_thread_fence(__ATOMIC_ACQUIRE);
-        }
-    }
-
-    if (count > 0) {
-        uint32_t old_cons = priv->cons;
-        uint32_t intr_at;
-
-        if (be->postsend) {
-            be->postsend(be);
-        }
-
-        /* Barrier between stores to sring entries and store to priv->cons. */
-        __atomic_thread_fence(__ATOMIC_RELEASE);
-        priv->cons = cons;
-        /* Full memory barrier to ensure store(priv->cons) happens before
-         * load(priv->intr_at). See the double-check in sring_txi(). */
-        __atomic_thread_fence(__ATOMIC_SEQ_CST);
-        intr_at = ACCESS_ONCE(priv->intr_at);
-        txq->notify =
-            (uint32_t)(cons - intr_at - 1) < (uint32_t)(cons - old_cons);
-        txq->stats.pkts += count;
-        txq->stats.batches++;
-    }
-
-    return count;
-}
-
-static size_t
-sring_gso_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
-               int *can_receive)
-{
-    struct bpfhv_rx_context *ctx = rxq->ctx.rx;
-    struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
-    size_t max_pkt_size = be->max_rx_pkt_size;
-    int vnet_hdr_len = be->vnet_hdr_len;
-    uint32_t prod = ACCESS_ONCE(priv->prod);
-    uint32_t cons = priv->cons;
-    struct iovec iov[BPFHV_MAX_RX_BUFS+1];
-    int count;
-
-    /* Make sure the load of from priv->prod is not delayed after the
-     * loads from the ring. */
-    __atomic_thread_fence(__ATOMIC_ACQUIRE);
-
-    rxq->notify = 0;
-
-    if (unlikely(priv->kick_enabled)) {
-        sring_rxq_notification(ctx, /*enable=*/0);
-    }
-
-    for (count = 0; count < BPFHV_BE_RX_BUDGET; count++) {
-        struct virtio_net_hdr_v1 hdr;
-        uint32_t cons_first = cons;
-        struct sring_rx_desc *rxd;
-        size_t iovsize = 0;
-        int iovcnt = 0;
-        int pktsize;
-
-        /* Collect enough receive descriptors to make room for a maximum
-         * sized packet, plus virtio-net header, if needed. */
-        if (vnet_hdr_len != 0) {
-            iov[0].iov_base = &hdr;
-            iov[0].iov_len = sizeof(hdr);
-            iovcnt = 1;
-        }
-        do {
-            if (unlikely(cons == prod)) {
-                /* We ran out of RX descriptors. In busy-wait mode we can just
-                 * bail out. Otherwise we enable RX kicks and double check for
-                 * more available descriptors. */
-                if (can_receive == NULL) {
-                    cons = cons_first;
-                    goto out;
-                }
-                sring_rxq_notification(ctx, /*enable=*/1);
-                prod = ACCESS_ONCE(priv->prod);
-                /* Make sure the load of from priv->prod is not delayed after the
-                 * loads from the ring. */
-                __atomic_thread_fence(__ATOMIC_ACQUIRE);
-                if (cons == prod) {
-                    /* Not enough space. We need to rewind to the first unused
-                     * descriptor and stop. */
-                    cons = cons_first;
-                    *can_receive = 0;
-                    goto out;
-                }
-                sring_rxq_notification(ctx, /*enable=*/0);
-            }
-
-            rxd = priv->desc + (cons & priv->qmask);
-            iov[iovcnt].iov_base = translate_addr(be, rxd->paddr, rxd->len);
-            if (unlikely(iov[iovcnt].iov_base == NULL)) {
-                /* Invalid descriptor. */
-                rxd->len = 0;
-                rxd->flags = 0;
-                if (verbose) {
-                    fprintf(stderr, "Invalid RX descriptor: gpa%"PRIx64", "
-                                    "len %u\n", rxd->paddr, rxd->len);
-                }
-            } else {
-                iov[iovcnt].iov_len = rxd->len;
-                iovsize += rxd->len;
-                iovcnt++;
-            }
-            cons++;
-        } while (iovsize < max_pkt_size && iovcnt < BPFHV_MAX_RX_BUFS);
-
-        /* Read into the scatter-gather buffer referenced by the collected
-         * descriptors. */
-        pktsize = be->recv(be, iov, iovcnt);
-        if (pktsize <= 0) {
-            /* No more data to read (or error). We need to rewind to the
-             * first unused descriptor and stop. */
-            cons = cons_first;
-            if (unlikely(pktsize < 0 && errno != EAGAIN)) {
-                fprintf(stderr, "recv() failed: %s\n", strerror(errno));
-            }
-            break;
-        }
-#if 0
-        printf("Received %d bytes\n", ret);
-#endif
-
-        /* Write back to the receive descriptors effectively used. */
-        pktsize -= vnet_hdr_len;
-        for (cons = cons_first; pktsize > 0; cons++) {
-            rxd = priv->desc + (cons & priv->qmask);
-
-            if (unlikely(rxd->len == 0)) {
-                /* This was an invalid descriptor. */
-                continue;
-            }
-
-            rxd->flags = 0;
-            rxd->len = (rxd->len <= pktsize) ? rxd->len : pktsize;
-            pktsize -= rxd->len;
-        }
-        /* Complete the last descriptor. */
-        rxd->flags = SRING_DESC_F_EOP;
-        if (vnet_hdr_len != 0) {
-#if 0
-            printf("rx hdr: {fl %x, cs %u, co %u, hl %u, gs %u, "
-                    "gt %u}\n",
-                    hdr.flags, hdr.csum_start, hdr.csum_offset,
-                    hdr.hdr_len, hdr.gso_size, hdr.gso_type);
-#endif
-            rxd->csum_start = hdr.csum_start;
-            rxd->csum_offset = hdr.csum_offset;
-            rxd->hdr_len = hdr.hdr_len;
-            rxd->gso_size = hdr.gso_size;
-            rxd->gso_type = hdr.gso_type;
-            if (hdr.flags & VIRTIO_NET_HDR_F_NEEDS_CSUM) {
-                rxd->flags |= SRING_DESC_F_NEEDS_CSUM;
-            }
-        }
-        rxq->stats.bufs += cons - cons_first;
-    }
-
-out:
-    if (count > 0) {
-        /* Barrier between store(sring entries) and store(priv->cons). */
-        __atomic_thread_fence(__ATOMIC_RELEASE);
-        priv->cons = cons;
-        /* Full memory barrier to ensure store(priv->cons) happens before
-         * load(priv->intr_enabled). See the double-check in sring_rxi().*/
-        __atomic_thread_fence(__ATOMIC_SEQ_CST);
-        rxq->notify = ACCESS_ONCE(priv->intr_enabled);
-        rxq->stats.pkts += count;
-        rxq->stats.batches++;
-    }
-
-    return count;
-}
-
-static size_t
-sring_gso_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
-{
-    struct bpfhv_tx_context *ctx = txq->ctx.tx;
-    struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
-    struct iovec iov[BPFHV_MAX_TX_BUFS+1];
-    uint32_t prod = ACCESS_ONCE(priv->prod);
-    int vnet_hdr_len = be->vnet_hdr_len;
-    uint32_t cons = priv->cons;
-    uint32_t cons_first = cons;
-    int iovcnt_start = vnet_hdr_len != 0 ? 1 : 0;
-    int iovcnt = iovcnt_start;
-    int count = 0;
-
-    /* Make sure the load of from priv->prod is not delayed after the
-     * loads from the ring. */
-    __atomic_thread_fence(__ATOMIC_ACQUIRE);
-
-    txq->notify = 0;
-
-    while (cons != prod) {
-        struct sring_tx_desc *txd = priv->desc + (cons & priv->qmask);
-
-        cons++;
-
-        iov[iovcnt].iov_base = translate_addr(be, txd->paddr, txd->len);
-        iov[iovcnt].iov_len = txd->len;
-        if (unlikely(iov[iovcnt].iov_base == NULL)) {
-            /* Invalid descriptor, just skip it. */
-            if (verbose) {
-                fprintf(stderr, "Invalid TX descriptor: gpa%"PRIx64", "
-                                "len %u\n", txd->paddr, txd->len);
-            }
-        } else {
-            iovcnt++;
-        }
-
-        if (txd->flags & SRING_DESC_F_EOP) {
-            struct virtio_net_hdr_v1 hdr;
-            int ret;
-
-            if (vnet_hdr_len != 0) {
-                hdr.flags = (txd->flags & SRING_DESC_F_NEEDS_CSUM) ?
-                    VIRTIO_NET_HDR_F_NEEDS_CSUM : 0;
-                hdr.csum_start = txd->csum_start;
-                hdr.csum_offset = txd->csum_offset;
-                hdr.hdr_len = txd->hdr_len;
-                hdr.gso_size = txd->gso_size;
-                hdr.gso_type = txd->gso_type;
-                hdr.num_buffers = 0;
-#if 0
-                printf("tx hdr: {fl %x, cs %u, co %u, hl %u, gs %u, gt %u}\n",
-                        hdr.flags, hdr.csum_start, hdr.csum_offset,
-                        hdr.hdr_len, hdr.gso_size, hdr.gso_type);
-#endif
-                iov[0].iov_base = &hdr;
-                iov[0].iov_len = sizeof(hdr);
-            }
-
-            ret = be->send(be, iov, iovcnt);
-            if (unlikely(ret <= 0)) {
-                /* Backend is blocked (or failed), so we need to stop.
-                 * The last packet was not transmitted, so we need to
-                 * rewind 'cons'. */
-                if (ret < 0) {
-                    if (can_send != NULL && errno == EAGAIN) {
-                        *can_send = 0;
-                    } else if (verbose) {
-                        fprintf(stderr, "send() failed: %s\n",
-                                strerror(errno));
-                    }
-                }
-                cons = cons_first;
-                break;
-            }
-#if 0
-            printf("Transmitted iovcnt %u --> %d\n", iovcnt, ret);
-#endif
-            txq->stats.bufs += cons - cons_first;
-            if (++count >= BPFHV_BE_TX_BUDGET) {
-                break;
-            }
-
-            iovcnt = iovcnt_start;
-            cons_first = cons;
-        }
-
-        if (unlikely(cons == prod)) {
-            /* Before stopping, check if more work came while we were
-             * not looking at priv->prod. Note that double-check logic
-             * is done by the caller. */
-            prod = ACCESS_ONCE(priv->prod);
-            /* Make sure the load of from priv->prod is not delayed after the
-             * loads from the ring. */
-            __atomic_thread_fence(__ATOMIC_ACQUIRE);
-        }
-    }
-
-    if (count > 0) {
-        uint32_t old_cons = priv->cons;
-        uint32_t intr_at;
-
-        if (be->postsend) {
-            be->postsend(be);
-        }
-
-        /* Barrier between stores to sring entries and store to priv->cons. */
-        __atomic_thread_fence(__ATOMIC_RELEASE);
-        priv->cons = cons;
-        /* Full memory barrier to ensure store(priv->cons) happens before
-         * load(priv->intr_at). See the double-check in sring_txi(). */
-        __atomic_thread_fence(__ATOMIC_SEQ_CST);
-        intr_at = ACCESS_ONCE(priv->intr_at);
-        txq->notify =
-            (uint32_t)(cons - intr_at - 1) < (uint32_t)(cons - old_cons);
-        txq->stats.pkts += count;
-        txq->stats.batches++;
-    }
-
-    return count;
-}
-
 static void
 process_packets_poll(BpfhvBackend *be)
 {
-    BeTxqDrainFun txqdrain = be->txqdrain;
-    BeRxqPushFun rxqpush = be->rxqpush;
+    BeOps ops = be->ops;
     int very_verbose = (verbose >= 2);
     int sleep_usecs = be->sleep_usecs;
     struct pollfd *pfd_stop;
@@ -1012,10 +260,10 @@ process_packets_poll(BpfhvBackend *be)
 
     /* Start with guest-->host notifications enabled. */
     for (i = RXI_BEGIN(be); i < RXI_END(be); i++) {
-        sring_rxq_notification(be->q[i].ctx.rx, /*enable=*/1);
+        ops.rxqkicks(be->q[i].ctx.rx, /*enable=*/1);
     }
     for (i = TXI_BEGIN(be); i < TXI_END(be); i++) {
-        sring_txq_notification(be->q[i].ctx.tx, /*enable=*/1);
+        ops.txqkicks(be->q[i].ctx.tx, /*enable=*/1);
     }
 
     /* Only single-queue is support for now. */
@@ -1046,7 +294,7 @@ process_packets_poll(BpfhvBackend *be)
             size_t count;
 
             can_receive = 1;
-            count = rxqpush(be, rxq, &can_receive);
+            count = ops.rxqpush(be, rxq, &can_receive);
             if (rxq->notify) {
                 rxq->stats.irqs++;
                 eventfd_signal(rxq->irqfd);
@@ -1060,7 +308,7 @@ process_packets_poll(BpfhvBackend *be)
                 poll_timeout = 0;
             }
             if (unlikely(very_verbose && count > 0)) {
-                sring_rxq_dump(rxq->ctx.rx);
+                ops.rxqdump(rxq->ctx.rx);
             }
         }
 
@@ -1071,9 +319,9 @@ process_packets_poll(BpfhvBackend *be)
             size_t count;
 
             /* Disable further kicks and start processing. */
-            sring_txq_notification(ctx, /*enable=*/0);
+            ops.txqkicks(ctx, /*enable=*/0);
             can_send = 1;
-            count = txqdrain(be, txq, &can_send);
+            count = ops.txqdrain(be, txq, &can_send);
             if (txq->notify) {
                 txq->stats.irqs++;
                 eventfd_signal(txq->irqfd);
@@ -1088,16 +336,16 @@ process_packets_poll(BpfhvBackend *be)
             } else {
                 /* Re-enable notifications and double check for
                  * more work. */
-                sring_txq_notification(ctx, /*enable=*/1);
-                if (unlikely(sring_txq_pending(ctx))) {
+                ops.txqkicks(ctx, /*enable=*/1);
+                if (unlikely(ops.txqpending(ctx))) {
                     /* More work found. We will process it in the
                      * next iteration. */
-                    sring_txq_notification(ctx, /*enable=*/0);
+                    ops.txqkicks(ctx, /*enable=*/0);
                     poll_timeout = 0;
                 }
             }
             if (unlikely(very_verbose && count > 0)) {
-                sring_txq_dump(ctx);
+                ops.txqdump(ctx);
             }
         }
 
@@ -1132,18 +380,17 @@ process_packets_poll(BpfhvBackend *be)
 static void
 process_packets_spin(BpfhvBackend *be)
 {
-    BeTxqDrainFun txqdrain = be->txqdrain;
-    BeRxqPushFun rxqpush = be->rxqpush;
+    BeOps ops = be->ops;
     int very_verbose = (verbose >= 2);
     int sleep_usecs = be->sleep_usecs;
     unsigned int i;
 
     /* Disable all guest-->host notifications. */
     for (i = RXI_BEGIN(be); i < RXI_END(be); i++) {
-        sring_rxq_notification(be->q[i].ctx.rx, /*enable=*/0);
+        ops.rxqkicks(be->q[i].ctx.rx, /*enable=*/0);
     }
     for (i = TXI_BEGIN(be); i < TXI_END(be); i++) {
-        sring_txq_notification(be->q[i].ctx.tx, /*enable=*/0);
+        ops.txqkicks(be->q[i].ctx.tx, /*enable=*/0);
     }
 
     while (ACCESS_ONCE(be->stopflag) == 0) {
@@ -1153,7 +400,7 @@ process_packets_spin(BpfhvBackend *be)
             BpfhvBackendQueue *rxq = be->q + 0;
             size_t count;
 
-            count = rxqpush(be, rxq, /*can_receive=*/NULL);
+            count = ops.rxqpush(be, rxq, /*can_receive=*/NULL);
             if (rxq->notify) {
                 rxq->stats.irqs++;
                 eventfd_signal(rxq->irqfd);
@@ -1162,7 +409,7 @@ process_packets_spin(BpfhvBackend *be)
                 }
             }
             if (unlikely(very_verbose && count > 0)) {
-                sring_rxq_dump(rxq->ctx.rx);
+                ops.rxqdump(rxq->ctx.rx);
             }
         }
 
@@ -1172,7 +419,7 @@ process_packets_spin(BpfhvBackend *be)
             BpfhvBackendQueue *txq = be->q + i;
             size_t count;
 
-            count = txqdrain(be, txq, /*can_send=*/NULL);
+            count = ops.txqdrain(be, txq, /*can_send=*/NULL);
             if (txq->notify) {
                 txq->stats.irqs++;
                 eventfd_signal(txq->irqfd);
@@ -1181,7 +428,7 @@ process_packets_spin(BpfhvBackend *be)
                 }
             }
             if (unlikely(very_verbose && count > 0)) {
-                sring_txq_dump(txq->ctx.tx);
+                ops.txqdump(txq->ctx.tx);
             }
         }
         if (sleep_usecs > 0) {
@@ -1256,7 +503,7 @@ backend_drain(BpfhvBackend *be)
         for (;;) {
             size_t count;
 
-            count = be->txqdrain(be, txq, /*can_send=*/NULL);
+            count = be->ops.txqdrain(be, txq, /*can_send=*/NULL);
             drained += count;
             if (drained >= be->num_tx_bufs || count == 0) {
                 break;
@@ -1612,9 +859,9 @@ main_loop(BpfhvBackend *be)
 
                 resp.hdr.size = sizeof(resp.payload.ctx_sizes);
                 resp.payload.ctx_sizes.rx_ctx_size =
-                    sring_rx_ctx_size(be->num_rx_bufs);
+                    be->ops.rxctxsize(be->num_rx_bufs);
                 resp.payload.ctx_sizes.tx_ctx_size =
-                    sring_tx_ctx_size(be->num_tx_bufs);
+                    be->ops.txctxsize(be->num_tx_bufs);
 
                 for (i = RXI_BEGIN(be); i < RXI_END(be); i++) {
                     snprintf(be->q[i].name, sizeof(be->q[i].name),
@@ -1702,10 +949,10 @@ main_loop(BpfhvBackend *be)
 
         case BPFHV_PROXY_REQ_GET_PROGRAMS: {
             resp.hdr.size = 0;
-            outfds[0] = open(be->progfile, O_RDONLY, 0);
+            outfds[0] = open(be->ops.progfile, O_RDONLY, 0);
             if (outfds[0] < 0) {
                 resp.hdr.flags |= BPFHV_PROXY_F_ERROR;
-                fprintf(stderr, "open(%s) failed: %s\n", be->progfile,
+                fprintf(stderr, "open(%s) failed: %s\n", be->ops.progfile,
                         strerror(errno));
                 break;
             }
@@ -1733,9 +980,9 @@ main_loop(BpfhvBackend *be)
             }
 
             if (is_rx) {
-                ctx_size = sring_rx_ctx_size(be->num_rx_bufs);
+                ctx_size = be->ops.rxctxsize(be->num_rx_bufs);
             } else if (queue_idx < be->num_queues) {
-                ctx_size = sring_tx_ctx_size(be->num_tx_bufs);
+                ctx_size = be->ops.txctxsize(be->num_tx_bufs);
             }
 
             if (gpa != 0) {
@@ -1756,13 +1003,13 @@ main_loop(BpfhvBackend *be)
             if (is_rx) {
                 be->q[queue_idx].ctx.rx = (struct bpfhv_rx_context *)ctx;
                 if (ctx) {
-                    sring_rx_ctx_init(be->q[queue_idx].ctx.rx,
+                    be->ops.rxctxinit(be->q[queue_idx].ctx.rx,
                                       be->num_rx_bufs);
                 }
             } else {
                 be->q[queue_idx].ctx.tx = (struct bpfhv_tx_context *)ctx;
                 if (ctx) {
-                    sring_tx_ctx_init(be->q[queue_idx].ctx.tx,
+                    be->ops.txctxinit(be->q[queue_idx].ctx.tx,
                                       be->num_tx_bufs);
                 }
             }
@@ -2225,9 +1472,7 @@ main(int argc, char **argv)
 
     be.cfd = cfd;
     be.features_avail = 0;
-    be.progfile = "proxy/sring_progs.o";
-    be.rxqpush = sring_rxq_push;
-    be.txqdrain = sring_txq_drain;
+    be.ops = sring_ops;
     if (csum) {
         be.features_avail = BPFHV_F_SG;
         be.features_avail |= BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM;
@@ -2235,9 +1480,7 @@ main(int argc, char **argv)
             be.features_avail |= BPFHV_F_TSOv4 | BPFHV_F_TCPv4_LRO
                               |  BPFHV_F_TSOv6 | BPFHV_F_TCPv6_LRO
                               |  BPFHV_F_UFO   | BPFHV_F_UDP_LRO;
-            be.progfile = "proxy/sring_progs_gso.o";
-            be.rxqpush = sring_gso_rxq_push;
-            be.txqdrain = sring_gso_txq_drain;
+            be.ops = sring_gso_ops;
         }
     }
 
