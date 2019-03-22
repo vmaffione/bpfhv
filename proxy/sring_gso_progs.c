@@ -95,7 +95,7 @@ int sring_gso_txp(struct bpfhv_tx_context *ctx)
      * in the hypervisor/backend TXQ drain routine). */
     smp_mb_full();
     ctx->oflags = ACCESS_ONCE(priv->kick_enabled) ?
-                  BPFHV_OFLAGS_NOTIF_NEEDED : 0;
+                  BPFHV_OFLAGS_KICK_NEEDED : 0;
 
     return 0;
 }
@@ -223,7 +223,7 @@ int sring_gso_rxp(struct bpfhv_rx_context *ctx)
      * in the hypervisor/backend RXQ processing routine). */
     smp_mb_full();
     ctx->oflags = ACCESS_ONCE(priv->kick_enabled) ?
-                  BPFHV_OFLAGS_NOTIF_NEEDED : 0;
+                  BPFHV_OFLAGS_KICK_NEEDED : 0;
 
     return 0;
 }

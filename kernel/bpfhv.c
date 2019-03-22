@@ -1645,7 +1645,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		}
 	}
 
-	if (!skb->xmit_more && (ctx->oflags & BPFHV_OFLAGS_NOTIF_NEEDED)) {
+	if (!skb->xmit_more && (ctx->oflags & BPFHV_OFLAGS_KICK_NEEDED)) {
 		writel(0, txq->doorbell);
 	}
 
@@ -1819,7 +1819,7 @@ bpfhv_rx_refill(struct bpfhv_rxq *rxq, gfp_t gfp)
 		netif_info(bi, rx_status, bi->netdev,
 			"rxp(%u bufs) --> %d\n", i, ret);
 
-		if (ctx->oflags & BPFHV_OFLAGS_NOTIF_NEEDED) {
+		if (ctx->oflags & BPFHV_OFLAGS_KICK_NEEDED) {
 			writel(0, rxq->doorbell);
 		}
 	}

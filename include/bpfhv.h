@@ -42,6 +42,12 @@ struct bpfhv_tx_buf {
 	uint32_t reserved;
 };
 
+#define BPFHV_MAX_RX_BUFS		64
+#define BPFHV_MAX_TX_BUFS		64
+#define BPFHV_IFLAGS_INTR_NEEDED	(1 << 0)
+#define BPFHV_OFLAGS_KICK_NEEDED	(1 << 0)
+#define BPFHV_OFLAGS_RESCHED_NEEDED	(1 << 1)
+
 /* Context for the transmit-side eBPF programs. */
 struct bpfhv_tx_context {
 	/* Reference to guest OS data structures, filled by the guest.
@@ -57,7 +63,7 @@ struct bpfhv_tx_context {
 	 *
 	 * On publication, 'packet', 'bufs' and 'num_bufs' are input argument
 	 * for the eBPF program, and 'oflags' is an output argument. The
-	 * BPFHV_OFLAGS_NOTIF_NEEDED bit is set if the guest is required
+	 * BPFHV_OFLAGS_KICK_NEEDED bit is set if the guest is required
 	 * to notify the hypervisor.
 	 * On completion, 'bufs', 'num_bufs' and 'oflags' are output arguments.
 	 * The 'bufs' and 'num_bufs' argument contain information about the
@@ -66,14 +72,13 @@ struct bpfhv_tx_context {
 	 * are available.
 	 */
 	uint64_t		packet;
-#define BPFHV_MAX_TX_BUFS		64
-	struct bpfhv_tx_buf	bufs[BPFHV_MAX_TX_BUFS];
 	uint32_t		num_bufs;
+	uint32_t		iflags;
 	uint32_t		oflags;
-#define BPFHV_OFLAGS_NOTIF_NEEDED	(1 << 0)
-#define BPFHV_OFLAGS_RESCHED_NEEDED	(1 << 1)
 	uint32_t		min_completed_bufs;
 	uint32_t		pad[13];
+
+	struct bpfhv_tx_buf	bufs[BPFHV_MAX_TX_BUFS];
 
 	/* Private hv-side context follows here. */
 	char			opaque[0];
@@ -103,7 +108,7 @@ struct bpfhv_rx_context {
 	 *
 	 * On publication, 'bufs' and 'num_bufs' are input argument for
 	 * the eBPF program, and 'oflags' is an output argument. The
-	 * BPFHV_OFLAGS_NOTIF_NEEDED bit is set if the guest is required
+	 * BPFHV_OFLAGS_KICK_NEEDED bit is set if the guest is required
 	 * to notify the hypervisor.
 	 * On completion, 'bufs', 'num_bufs' and 'oflags' are output arguments.
 	 * The 'bufs' and 'num_bufs' argument contain the list of buffers that
@@ -112,12 +117,13 @@ struct bpfhv_rx_context {
 	 * receive eBPF program by means of a helper call.
 	 */
 	uint64_t		packet;
-#define BPFHV_MAX_RX_BUFS		64
-	struct bpfhv_rx_buf	bufs[BPFHV_MAX_RX_BUFS];
 	uint32_t		num_bufs;
+	uint32_t		iflags;
 	uint32_t		oflags;
 	uint32_t		min_completed_bufs;
 	uint32_t		pad[13];
+
+	struct bpfhv_rx_buf	bufs[BPFHV_MAX_RX_BUFS];
 
 	/* Private hv-side context follows here. */
 	char			opaque[0];
