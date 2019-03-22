@@ -213,7 +213,8 @@ static const struct ethtool_ops bpfhv_ethtool_ops = {
 static uint32_t
 bpfhv_hv_features(struct bpfhv_info *bi)
 {
-	uint32_t driver_features = BPFHV_F_SG;
+	uint32_t driver_features = BPFHV_F_SG |
+		BPFHV_F_RX_OUT_OF_ORDER | BPFHV_F_TX_OUT_OF_ORDER;
 	uint32_t hv_features;
 
 	if (csum) {

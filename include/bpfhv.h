@@ -299,6 +299,10 @@ enum {
 #define		BPFHV_F_UFO		(1 << 7)
 /* Guest handles LRO packets (UDP reception). */
 #define		BPFHV_F_UDP_LRO		(1 << 8)
+/* Host can process receive buffers out of order. */
+#define		BPFHV_F_RX_OUT_OF_ORDER	(1 << 9)
+/* Host can process transmit buffers out of order. */
+#define		BPFHV_F_TX_OUT_OF_ORDER	(1 << 10)
 
 /* Debug registers. */
 #define		BPFHV_REG_DUMP_LEN	80
