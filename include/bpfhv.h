@@ -44,7 +44,7 @@ struct bpfhv_tx_buf {
 
 #define BPFHV_MAX_RX_BUFS		64
 #define BPFHV_MAX_TX_BUFS		64
-#define BPFHV_IFLAGS_INTR_NEEDED	(1 << 0)
+#define BPFHV_IFLAGS_INTR_UNNEEDED	(1 << 0)
 #define BPFHV_OFLAGS_KICK_NEEDED	(1 << 0)
 #define BPFHV_OFLAGS_RESCHED_NEEDED	(1 << 1)
 
