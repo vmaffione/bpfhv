@@ -114,6 +114,8 @@ struct bpfhv_rxq {
 
 	struct napi_struct		napi;
 
+	unsigned int			idx;
+
 	char irq_name[64];
 
 };
@@ -141,9 +143,9 @@ struct bpfhv_txq {
 	 * on this queue. */
 	u32* __iomem			doorbell;
 
-	unsigned int			idx;
-
 	struct napi_struct		napi;
+
+	unsigned int			idx;
 
 	char irq_name[64];
 };
@@ -380,6 +382,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		struct bpfhv_rxq *rxq = bi->rxqs + i;
 
 		rxq->bi = bi;
+		rxq->idx = i;
 		netif_napi_add(netdev, &rxq->napi, bpfhv_rx_poll,
 				NAPI_POLL_WEIGHT);
 		rxq->doorbell = (u32* __iomem)(dbmmio_addr +
@@ -695,7 +698,7 @@ bpfhv_tx_intr(int irq, void *data)
 	if (tx_napi) {
 		napi_schedule(&txq->napi);
 	} else {
-		netif_wake_subqueue(txq->bi->netdev, txq - txq->bi->txqs);
+		netif_wake_subqueue(txq->bi->netdev, txq->idx);
 	}
 
 	return IRQ_HANDLED;
@@ -1655,8 +1658,7 @@ bpfhv_tx_poll(struct napi_struct *napi, int budget)
 	struct bpfhv_txq *txq = container_of(napi, struct bpfhv_txq, napi);
 	struct bpfhv_tx_context *ctx = txq->ctx;
 	struct bpfhv_info *bi = txq->bi;
-	struct netdev_queue *q =
-		netdev_get_tx_queue(bi->netdev, txq - bi->txqs);
+	struct netdev_queue *q = netdev_get_tx_queue(bi->netdev, txq->idx);
 	bool wakeup, more;
 
 	__netif_tx_lock(q, raw_smp_processor_id());
