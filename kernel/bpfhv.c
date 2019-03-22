@@ -1546,6 +1546,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	struct bpfhv_tx_context *ctx = txq->ctx;
 	unsigned int len = skb_headlen(skb);
 	struct device *dev = bi->dev;
+	bool kick = !skb->xmit_more;
 	unsigned int nr_frags;
 	unsigned int i;
 	unsigned int f;
@@ -1617,6 +1618,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_PUBLISH], /*ctx=*/ctx);
 	netif_info(bi, tx_queued, bi->netdev,
 		"txp(%u bytes) --> %d\n", skb->len, ret);
+	kick &= ctx->oflags & BPFHV_OFLAGS_KICK_NEEDED;
 
 	if (tx_napi) {
 		/* Enable the interrupts to clean this published buffer once
@@ -1645,7 +1647,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		}
 	}
 
-	if (!skb->xmit_more && (ctx->oflags & BPFHV_OFLAGS_KICK_NEEDED)) {
+	if (kick) {
 		writel(0, txq->doorbell);
 	}
 
