@@ -46,6 +46,12 @@ static int BPFHV_FUNC(smp_mb_full);
 #define smp_mb_release()    compiler_barrier()
 #define smp_mb_acquire()    compiler_barrier()
 
+static inline int
+clear_met_cons(uint32_t old_clear, uint32_t cons, uint32_t new_clear)
+{
+    return (uint32_t)(new_clear - cons - 1) < (uint32_t)(new_clear - old_clear);
+}
+
 __section("txp")
 int sring_gso_txp(struct bpfhv_tx_context *ctx)
 {
@@ -100,9 +106,9 @@ int sring_gso_txp(struct bpfhv_tx_context *ctx)
     return 0;
 }
 
-static inline uint32_t
+static inline void
 sring_gso_tx_get_one(struct bpfhv_tx_context *ctx,
-                 struct sring_gso_tx_context *priv, uint32_t start)
+                 struct sring_gso_tx_context *priv)
 {
     uint32_t i;
 
@@ -110,8 +116,8 @@ sring_gso_tx_get_one(struct bpfhv_tx_context *ctx,
         struct bpfhv_tx_buf *txb = ctx->bufs + i;
         struct sring_gso_tx_desc *txd;
 
-        txd = priv->desc + (start & priv->qmask);
-        start++;
+        txd = priv->desc + (priv->clear & priv->qmask);
+        priv->clear++;
         i++;
         txb->paddr = txd->paddr;
         txb->len = txd->len;
@@ -122,8 +128,6 @@ sring_gso_tx_get_one(struct bpfhv_tx_context *ctx,
     }
 
     ctx->num_bufs = i;
-
-    return start;
 }
 
 __section("txc")
@@ -140,7 +144,7 @@ int sring_gso_txc(struct bpfhv_tx_context *ctx)
      * entries in sring_gso_tx_get_one(). */
     smp_mb_acquire();
 
-    priv->clear = sring_gso_tx_get_one(ctx, priv, clear);
+    sring_gso_tx_get_one(ctx, priv);
     ctx->oflags = 0;
 
     return 1;
@@ -151,14 +155,18 @@ int sring_gso_txr(struct bpfhv_tx_context *ctx)
 {
     struct sring_gso_tx_context *priv = (struct sring_gso_tx_context *)ctx->opaque;
     uint32_t cons = ACCESS_ONCE(priv->cons);
+    uint32_t clear = priv->clear;
     uint32_t prod = priv->prod;
 
-    if (cons == prod) {
+    if (clear == prod) {
         return 0;
     }
     smp_mb_acquire();
 
-    ACCESS_ONCE(priv->cons) = priv->clear = sring_gso_tx_get_one(ctx, priv, cons);
+    sring_gso_tx_get_one(ctx, priv);
+    if (clear_met_cons(clear, cons, priv->clear)) {
+        ACCESS_ONCE(priv->cons) = priv->clear;
+    }
     ctx->oflags = 0;
 
     return 1;
@@ -301,26 +309,30 @@ int sring_gso_rxr(struct bpfhv_rx_context *ctx)
 {
     struct sring_gso_rx_context *priv = (struct sring_gso_rx_context *)ctx->opaque;
     uint32_t cons = ACCESS_ONCE(priv->cons);
+    uint32_t clear = priv->clear;
     uint32_t prod = priv->prod;
     uint32_t i = 0;
 
-    if (cons == prod) {
+    if (clear == prod) {
         return 0;
     }
     smp_mb_acquire();
 
-    for (; cons != prod && i < BPFHV_MAX_RX_BUFS; i++) {
+    for (; clear != prod && i < BPFHV_MAX_RX_BUFS; i++) {
         struct bpfhv_rx_buf *rxb = ctx->bufs + i;
         struct sring_gso_rx_desc *rxd;
 
-        rxd = priv->desc + (cons & priv->qmask);
-        cons++;
+        rxd = priv->desc + (clear & priv->qmask);
+        clear++;
         rxb->cookie = rxd->cookie;
         rxb->paddr = rxd->paddr;
         rxb->len = rxd->len;
     }
 
-    ACCESS_ONCE(priv->cons) = priv->clear = cons;
+    if (clear_met_cons(clear, cons, priv->clear)) {
+        ACCESS_ONCE(priv->cons) = clear;
+    }
+    priv->clear = clear;
     ctx->num_bufs = i;
     ctx->oflags = 0;
 
