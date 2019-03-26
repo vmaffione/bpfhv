@@ -119,7 +119,7 @@ sring_gso_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
     uint32_t prod = ACCESS_ONCE(priv->prod);
     uint32_t cons = priv->cons;
     struct iovec iov[BPFHV_MAX_RX_BUFS+1];
-    int count;
+    int count = 0;
 
     /* Make sure the load of from priv->prod is not delayed after the
      * loads from the ring. */
@@ -131,7 +131,7 @@ sring_gso_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
         __sring_rxq_notification(priv, /*enable=*/0);
     }
 
-    for (count = 0; count < BPFHV_BE_RX_BUDGET; count++) {
+    for (;;) {
         struct virtio_net_hdr_v1 hdr;
         uint32_t cons_first = cons;
         struct sring_gso_rx_desc *rxd;
@@ -188,6 +188,10 @@ sring_gso_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
             cons++;
         } while (iovsize < max_pkt_size && iovcnt < BPFHV_MAX_RX_BUFS);
 
+        if (unlikely(count >= BPFHV_BE_RX_BUDGET)) {
+            break;
+        }
+
         /* Read into the scatter-gather buffer referenced by the collected
          * descriptors. */
         pktsize = be->recv(be, iov, iovcnt);
@@ -237,6 +241,7 @@ sring_gso_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
             }
         }
         rxq->stats.bufs += cons - cons_first;
+        count++;
     }
 
 out:

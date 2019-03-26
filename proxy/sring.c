@@ -116,7 +116,7 @@ sring_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
     struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
     uint32_t prod = ACCESS_ONCE(priv->prod);
     uint32_t cons = priv->cons;
-    int count;
+    int count = 0;
 
     /* Make sure the load of from priv->prod is not delayed after the
      * loads from the ring. */
@@ -128,7 +128,7 @@ sring_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
         __sring_rxq_notification(priv, /*enable=*/0);
     }
 
-    for (count = 0; count < BPFHV_BE_RX_BUDGET; ) {
+    for (;;) {
         struct sring_rx_desc *rxd;
         struct iovec iov;
         int pktsize;
@@ -151,6 +151,10 @@ sring_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
                 goto out;
             }
             __sring_rxq_notification(priv, /*enable=*/0);
+        }
+
+        if (unlikely(count >= BPFHV_BE_RX_BUDGET)) {
+            break;
         }
 
         rxd = priv->desc + (cons & priv->qmask);
