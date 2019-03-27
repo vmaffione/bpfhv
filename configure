@@ -1,5 +1,87 @@
 #!/bin/bash
 
+usage() {
+    cat <<EOF
+configure options:
+
+    --help                      Show this help and exit
+    --prefix                    [/] Prefix path for installation of kernel and user components
+    --kdir                      Path to the kernel directory to use for out-of-tree module compilation
+    --nodriver                  Don't build the guest kernel driver
+    --noproxy                   Don't build proxy code
+    --netmap			Build the proxy backend with netmap support
+EOF
+}
+
+# Default parameter values
+INSTALL_PREFIX="/"
+KERNBUILDDIR="/lib/modules/`uname -r`/build"
+BUILD_DRIVER="y"
+BUILD_PROXY="y"
+KER_INSTALL_DEPS="ker"
+NETMAP="n"
+
+# Option parsing
+while [[ $# > 0 ]]
+do
+    key="$1"
+    case $key in
+        "-h")
+            usage
+            exit 0
+        ;;
+
+        "--help")
+            usage
+            exit 0
+        ;;
+
+        "--prefix")
+        if [ -n "$2" ]; then
+            INSTALL_PREFIX=$2
+            shift
+        else
+            echo "--prefix requires a path argument"
+            exit 255
+        fi
+        ;;
+
+        "--kdir")
+        if [ -n "$2" ]; then
+            KERNBUILDDIR=$2
+            shift
+        else
+            echo "--kdir requires a path argument"
+            exit 255
+        fi
+        ;;
+
+        "--nodriver")
+        BUILD_DRIVER="n"
+        ;;
+
+        "--noproxy")
+        BUILD_PROXY="n"
+        ;;
+
+        "--netmap")
+        NETMAP="y"
+        ;;
+
+        *)
+        echo "Unknown option '$key'"
+        echo "Try ./configure --help"
+        exit 255
+        ;;
+    esac
+    shift
+done
+
 SRCDIR=$(dirname $(realpath $0))
 cp $SRCDIR/Makefile.in $SRCDIR/Makefile
 sed -i "s|@SRCDIR@|$SRCDIR|g" $SRCDIR/Makefile
+sed -i "s|@NETMAP@|$NETMAP|g" $SRCDIR/Makefile
+sed -i "s|@PROXY@|${BUILD_PROXY}|g" $SRCDIR/Makefile
+sed -i "s|@DRIVER@|${BUILD_DRIVER}|g" $SRCDIR/Makefile
+sed -i "s|@INSTALL_MOD_PATH@|${INSTALL_PREFIX}|g" $SRCDIR/Makefile
+sed -i "s|@KERNBUILDDIR@|$KERNBUILDDIR|g" $SRCDIR/Makefile
