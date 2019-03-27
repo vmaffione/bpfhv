@@ -1471,12 +1471,11 @@ main(int argc, char **argv)
         return ret;
     }
 
-    be.vnet_hdr_len = 0;
+    be.vnet_hdr_len = (csum || gso) ?
+        sizeof(struct virtio_net_hdr_v1) : 0;
     be.postsend = NULL;
     if (!strcmp(be.backend, "tap")) {
         /* Open a TAP device to use as network backend. */
-        be.vnet_hdr_len = (csum || gso) ?
-            sizeof(struct virtio_net_hdr_v1) : 0;
         be.befd = tap_alloc(ifname, be.vnet_hdr_len, csum, gso);
         if (be.befd < 0) {
             fprintf(stderr, "Failed to allocate TAP device\n");
@@ -1504,7 +1503,6 @@ main(int argc, char **argv)
 #ifdef WITH_NETMAP
     else if (!strcmp(be.backend, "netmap")) {
         /* Open a netmap port to use as network backend. */
-        csum = gso = 0;
         be.nm.port = nmport_open(ifname);
         if (be.nm.port == NULL) {
             fprintf(stderr, "nmport_open(%s) failed: %s\n", ifname,
@@ -1521,6 +1519,23 @@ main(int argc, char **argv)
         be.recv = netmap_recv;
         be.send = netmap_send;
         be.postsend = netmap_postsend;
+
+        if (be.vnet_hdr_len > 0) {
+            struct nmreq_port_hdr req;
+            struct nmreq_header hdr;
+            int ret;
+
+            memcpy(&hdr, &be.nm.port->hdr, sizeof(hdr));
+            hdr.nr_reqtype = NETMAP_REQ_PORT_HDR_SET;
+            hdr.nr_body    = (uintptr_t)&req;
+            memset(&req, 0, sizeof(req));
+            req.nr_hdr_len = be.vnet_hdr_len;
+            ret = ioctl(be.befd, NIOCCTRL, &hdr);
+            if (ret != 0) {
+                fprintf(stderr, "ioctl(/dev/netmap, NIOCCTRL, PORT_HDR_SET)");
+                return ret;
+            }
+        }
     }
 #endif
 
