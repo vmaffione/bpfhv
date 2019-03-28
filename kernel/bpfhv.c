@@ -654,7 +654,7 @@ bpfhv_upgrade(struct work_struct *w)
 	/* Disable transmit and receive in the hardware, disable
 	 * NAPI and release the allocated resources. */
 	if (netif_running(bi->netdev)) {
-		bpfhv_close_carrier(bi->netdev, /*carrier_off=*/false);
+		bpfhv_close_carrier(bi->netdev, /*carrier_off=*/true);
 	}
 
 	/* Tell the hypervisor that we are ready to proceed with
