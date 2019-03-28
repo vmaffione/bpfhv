@@ -177,6 +177,8 @@ static int		bpfhv_queues_dump(struct bpfhv_info *bi,
 static int		bpfhv_open(struct net_device *netdev);
 static int		bpfhv_resources_alloc(struct bpfhv_info *bi);
 static int		bpfhv_close(struct net_device *netdev);
+static int		bpfhv_close_carrier(struct net_device *netdev,
+					    bool carrier_off);
 static void		bpfhv_resources_dealloc(struct bpfhv_info *bi);
 static netdev_tx_t	bpfhv_start_xmit(struct sk_buff *skb,
 					struct net_device *netdev);
@@ -652,7 +654,7 @@ bpfhv_upgrade(struct work_struct *w)
 	/* Disable transmit and receive in the hardware, disable
 	 * NAPI and release the allocated resources. */
 	if (netif_running(bi->netdev)) {
-		bpfhv_close(bi->netdev);
+		bpfhv_close_carrier(bi->netdev, /*carrier_off=*/false);
 	}
 
 	/* Tell the hypervisor that we are ready to proceed with
@@ -1388,6 +1390,12 @@ bpfhv_resources_alloc(struct bpfhv_info *bi)
 static int
 bpfhv_close(struct net_device *netdev)
 {
+	return bpfhv_close_carrier(netdev, /*carrier_off=*/true);
+}
+
+static int
+bpfhv_close_carrier(struct net_device *netdev, bool carrier_off)
+{
 	struct bpfhv_info *bi = netdev_priv(netdev);
 	int i;
 
@@ -1417,7 +1425,9 @@ bpfhv_close(struct net_device *netdev)
 	 * version of netif_tx_stop_all_queues()). This must be done
 	 * after disabling transmit NAPI, because the latter can call
 	 * netif_tx_wake_queue(), and thus undo the stop. */
-	netif_carrier_off(netdev);
+	if (carrier_off) {
+		netif_carrier_off(netdev);
+	}
 	netif_tx_disable(netdev);
 
 	/* Disable receive NAPI (and wait for already scheduled
