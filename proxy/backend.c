@@ -276,6 +276,12 @@ netmap_postsend(BpfhvBackend *be)
 {
     ioctl(be->befd, NIOCTXSYNC, NULL);
 }
+
+static void
+netmap_prerecv(BpfhvBackend *be)
+{
+    ioctl(be->befd, NIOCRXSYNC, NULL);
+}
 #endif
 
 static void
@@ -445,8 +451,11 @@ process_packets_spin(BpfhvBackend *be)
     }
 
     while (ACCESS_ONCE(be->stopflag) == 0) {
-        /* Read packets from the TAP interface into the first receive
-         * queue. */
+        /* Read packets from the backend interface (e.g. TAP, netmap)
+         * into the first receive queue. */
+        if (be->prerecv) {
+            be->prerecv(be);
+        }
         {
             BpfhvBackendQueue *rxq = be->q + 0;
             size_t count;
@@ -465,7 +474,7 @@ process_packets_spin(BpfhvBackend *be)
         }
 
         /* Drain the packets from the transmit queues, sending them
-         * to the TAP interface. */
+         * to the backend interface. */
         for (i = TXI_BEGIN(be); i < TXI_END(be); i++) {
             BpfhvBackendQueue *txq = be->q + i;
             size_t count;
@@ -1474,6 +1483,7 @@ main(int argc, char **argv)
     be.vnet_hdr_len = (csum || gso) ?
         sizeof(struct virtio_net_hdr_v1) : 0;
     be.postsend = NULL;
+    be.prerecv = NULL;
     if (!strcmp(be.backend, "tap")) {
         /* Open a TAP device to use as network backend. */
         be.befd = tap_alloc(ifname, be.vnet_hdr_len, csum, gso);
@@ -1519,6 +1529,9 @@ main(int argc, char **argv)
         be.recv = netmap_recv;
         be.send = netmap_send;
         be.postsend = netmap_postsend;
+        if (be.busy_wait) {
+            be.prerecv = netmap_prerecv;
+        }
 
         if (be.vnet_hdr_len > 0) {
             struct nmreq_port_hdr req;
