@@ -44,7 +44,7 @@ struct bpfhv_tx_buf {
 
 #define BPFHV_MAX_RX_BUFS		64
 #define BPFHV_MAX_TX_BUFS		64
-#define BPFHV_IFLAGS_INTR_UNNEEDED	(1 << 0)
+#define BPFHV_IFLAGS_INTR_NEEDED	(1 << 0)
 #define BPFHV_OFLAGS_KICK_NEEDED	(1 << 0)
 #define BPFHV_OFLAGS_RESCHED_NEEDED	(1 << 1)
 
@@ -76,7 +76,8 @@ struct bpfhv_tx_context {
 	uint32_t		iflags;
 	uint32_t		oflags;
 	uint32_t		min_completed_bufs;
-	uint32_t		pad[13];
+	uint32_t		min_intr_nsecs;
+	uint32_t		reserved[3];
 
 	struct bpfhv_tx_buf	bufs[BPFHV_MAX_TX_BUFS];
 
@@ -121,7 +122,8 @@ struct bpfhv_rx_context {
 	uint32_t		iflags;
 	uint32_t		oflags;
 	uint32_t		min_completed_bufs;
-	uint32_t		pad[13];
+	uint32_t		min_intr_nsecs;
+	uint32_t		reserved[3];
 
 	struct bpfhv_rx_buf	bufs[BPFHV_MAX_RX_BUFS];
 
