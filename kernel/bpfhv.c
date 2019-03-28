@@ -1442,9 +1442,13 @@ bpfhv_close_carrier(struct net_device *netdev, bool carrier_off)
 		bpfhv_rx_clean(rxq, bi->rx_bufs);
 	}
 
-	bpfhv_queues_dump(bi, "pre-dealloc");
+	if (bi->msg_enable & NETIF_MSG_IFDOWN) {
+		bpfhv_queues_dump(bi, "pre-dealloc");
+	}
 	bpfhv_resources_dealloc(bi);
-	bpfhv_queues_dump(bi, "post-dealloc");
+	if (bi->msg_enable & NETIF_MSG_IFDOWN) {
+		bpfhv_queues_dump(bi, "post-dealloc");
+	}
 
 	return 0;
 }
