@@ -1,5 +1,5 @@
 === Structure of this repository ===
-The kernel/ directory contains the bpfhv guest driver for
+The driver/ directory contains the bpfhv guest driver for
 Linux kernels (>= 4.18):
     - bpfhv.c: driver source code
 
