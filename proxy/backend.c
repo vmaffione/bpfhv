@@ -272,15 +272,15 @@ netmap_send(BpfhvBackend *be, const struct iovec *iov, size_t iovcnt)
 }
 
 static void
-netmap_postsend(BpfhvBackend *be)
+netmap_sync(BpfhvBackend *be)
 {
-    ioctl(be->befd, NIOCTXSYNC, NULL);
-}
-
-static void
-netmap_prerecv(BpfhvBackend *be)
-{
-    ioctl(be->befd, NIOCRXSYNC, NULL);
+    /* Optimization: use poll() with 0 timeout to perform the equivalent
+     * of ioctl(NIOCTXSYNC) + ioctl(NIOCRXSYNC) with a single system call. */
+    struct pollfd pfd = {
+        .fd = be->befd,
+        .events = POLLIN | POLLOUT,
+    };
+    poll(&pfd, 1, /*timeout_ms=*/0);
 }
 #endif
 
@@ -451,11 +451,12 @@ process_packets_spin(BpfhvBackend *be)
     }
 
     while (ACCESS_ONCE(be->stopflag) == 0) {
+        if (be->sync) {
+            be->sync(be);
+        }
+
         /* Read packets from the backend interface (e.g. TAP, netmap)
          * into the first receive queue. */
-        if (be->prerecv) {
-            be->prerecv(be);
-        }
         {
             BpfhvBackendQueue *rxq = be->q + 0;
             size_t count;
@@ -1482,8 +1483,7 @@ main(int argc, char **argv)
 
     be.vnet_hdr_len = (csum || gso) ?
         sizeof(struct virtio_net_hdr_v1) : 0;
-    be.postsend = NULL;
-    be.prerecv = NULL;
+    be.sync = NULL;
     if (!strcmp(be.backend, "tap")) {
         /* Open a TAP device to use as network backend. */
         be.befd = tap_alloc(ifname, be.vnet_hdr_len, csum, gso);
@@ -1528,9 +1528,8 @@ main(int argc, char **argv)
         be.befd = be.nm.port->fd;
         be.recv = netmap_recv;
         be.send = netmap_send;
-        be.postsend = netmap_postsend;
         if (be.busy_wait) {
-            be.prerecv = netmap_prerecv;
+            be.sync = netmap_sync;
         }
 
         if (be.vnet_hdr_len > 0) {

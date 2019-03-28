@@ -57,8 +57,7 @@ typedef ssize_t (*BeSendFun)(struct BpfhvBackend *be, const struct iovec *iov,
                              size_t iovcnt);
 typedef ssize_t (*BeRecvFun)(struct BpfhvBackend *be, const struct iovec *iov,
                              size_t iovcnt);
-typedef void (*BePostSendFun)(struct BpfhvBackend *be);
-typedef void (*BePreRecvFun)(struct BpfhvBackend *be);
+typedef void (*BeSyncFun)(struct BpfhvBackend *be);
 
 typedef struct BeOps {
     size_t (*rx_ctx_size)(size_t num_rx_bufs);
@@ -162,8 +161,7 @@ typedef struct BpfhvBackend {
     /* Send and receive functions for real send/receive operations. */
     BeSendFun send;
     BeRecvFun recv;
-    BePostSendFun postsend;
-    BePreRecvFun prerecv;
+    BeSyncFun sync;
 
     /* RX and TX queues (in this order). */
     BpfhvBackendQueue q[BPFHV_MAX_QUEUES];

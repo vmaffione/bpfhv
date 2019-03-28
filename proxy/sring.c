@@ -271,10 +271,6 @@ sring_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
         uint32_t old_cons = priv->cons;
         uint32_t intr_at;
 
-        if (be->postsend) {
-            be->postsend(be);
-        }
-
         /* Barrier between stores to sring entries and store to priv->cons. */
         __atomic_thread_fence(__ATOMIC_RELEASE);
         priv->cons = cons;
