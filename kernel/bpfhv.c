@@ -1552,6 +1552,9 @@ bpfhv_resources_dealloc(struct bpfhv_info *bi)
 
 #define F_MAPPED_AS_PAGE	(0x1)
 
+#define HALF_PENDING_BUFS(_bi, _txq)	\
+	(1 + ((_bi)->tx_bufs - (_txq)->tx_free_bufs) / 2)
+
 static netdev_tx_t
 bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
@@ -1635,9 +1638,9 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	kick &= ctx->oflags & BPFHV_OFLAGS_KICK_NEEDED;
 
 	if (tx_napi) {
-		/* Enable the interrupts to clean this published buffer once
-		 * transmitted. */
-		ctx->min_completed_bufs = 1 + (bi->tx_bufs - txq->tx_free_bufs) / 2;
+		/* Enable the interrupts to clean the pending buffers once at
+		 * least half of them have been transmitted. */
+		ctx->min_completed_bufs = HALF_PENDING_BUFS(bi, txq);
 		BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_INTRS], ctx);
 	} else {
 		skb_orphan(skb);
@@ -1645,14 +1648,16 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	}
 
 	if (txq->tx_free_bufs < 2 + MAX_SKB_FRAGS) {
+		/* We ran out of buffers. */
 		if (tx_napi) {
+			/* Stop the queue until the next interrupt. */
 			netif_stop_subqueue(netdev, txq->idx);
 		} else {
+			/* Enable the interrupts to clean the pending buffers
+			 * once at least half of them have been transmitted. */
 			bool have_enough_bufs;
 
-			/* Enable interrupts if we are out of buffers. */
-			ctx->min_completed_bufs =
-				1 + (bi->tx_bufs - txq->tx_free_bufs) / 2;
+			ctx->min_completed_bufs = HALF_PENDING_BUFS(bi, txq);
 			have_enough_bufs = BPF_PROG_RUN(
 				bi->progs[BPFHV_PROG_TX_INTRS], ctx);
 			if (!have_enough_bufs) {
@@ -1687,7 +1692,7 @@ bpfhv_tx_poll(struct napi_struct *napi, int budget)
 	wakeup = (txq->tx_free_bufs >= 2 + MAX_SKB_FRAGS);
 
 	/* Enable interrupts and complete NAPI. */
-	ctx->min_completed_bufs = 1 + (bi->tx_bufs - txq->tx_free_bufs) / 2;
+	ctx->min_completed_bufs = HALF_PENDING_BUFS(bi, txq);
 	more = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_INTRS], ctx);
 
 	__netif_tx_unlock(q);
