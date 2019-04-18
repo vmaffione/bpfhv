@@ -937,6 +937,13 @@ bpfhv_prog_dump(const char *progname, struct bpf_insn *insns,
 }
 #endif /* PROGDUMP */
 
+static bool
+prog_is_optional(unsigned int prog_idx)
+{
+	return prog_idx == BPFHV_PROG_RX_POSTPROC ||
+		prog_idx == BPFHV_PROG_TX_PREPROC;
+}
+
 static const char *
 progname_from_idx(unsigned int prog_idx)
 {
@@ -949,6 +956,8 @@ progname_from_idx(unsigned int prog_idx)
 		return "rxi";
 	case BPFHV_PROG_RX_RECLAIM:
 		return "rxr";
+	case BPFHV_PROG_RX_POSTPROC:
+		return "rxh";
 	case BPFHV_PROG_TX_PUBLISH:
 		return "txp";
 	case BPFHV_PROG_TX_COMPLETE:
@@ -957,6 +966,8 @@ progname_from_idx(unsigned int prog_idx)
 		return "txi";
 	case BPFHV_PROG_TX_RECLAIM:
 		return "txr";
+	case BPFHV_PROG_TX_PREPROC:
+		return "txh";
 	default:
 		break;
 	}
@@ -1074,6 +1085,11 @@ bpfhv_programs_setup(struct bpfhv_info *bi)
 
 		writel(i, bi->regaddr + BPFHV_REG_PROG_SELECT);
 		prog_len = readl(bi->regaddr + BPFHV_REG_PROG_SIZE);
+		if (prog_len == 0 && prog_is_optional(i)) {
+			/* It's ok if an optional program is missing. */
+			bi->progs[i] = NULL;
+			continue;
+		}
 		if (prog_len == 0 || prog_len > BPFHV_PROG_SIZE_MAX) {
 			netif_err(bi, drv, bi->netdev,
 				"Invalid program length %u\n",
@@ -1586,8 +1602,19 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 
 	skb_tx_timestamp(skb);
 
-	/* Prepare the input arguments for the txp program. */
+	/* Prepare the input arguments for the txh and txp programs. */
 	ctx->packet = (uintptr_t)skb;
+
+	if (bi->progs[BPFHV_PROG_TX_PREPROC]) {
+		ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_PREPROC],
+				/*ctx=*/txq->ctx);
+		netif_info(bi, tx_queued, bi->netdev,
+			"txh(%u bytes) --> %d\n", skb->len, ret);
+		if (unlikely(ret)) {
+			dev_kfree_skb_any(skb);
+			return NETDEV_TX_OK;
+		}
+	}
 
 	/* Linear part. */
 	dma = dma_map_single(dev, skb->data, len, DMA_TO_DEVICE);
@@ -1908,6 +1935,15 @@ bpfhv_rx_clean(struct bpfhv_rxq *rxq, int budget)
 			netif_err(bi, rx_err, bi->netdev,
 				"rxc() hv bug: skb not allocated\n");
 			break;
+		}
+
+		if (bi->progs[BPFHV_PROG_RX_POSTPROC]) {
+			ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_RX_POSTPROC],
+						/*ctx=*/ctx);
+			if (unlikely(ret)) {
+				netif_err(bi, rx_err, bi->netdev,
+					"rxh() --> %d\n", ret);
+			}
 		}
 
 		skb->protocol = eth_type_trans(skb, bi->netdev);
