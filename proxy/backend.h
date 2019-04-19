@@ -73,6 +73,8 @@ typedef struct BeOps {
     int (*txq_pending)(struct bpfhv_tx_context *ctx);
     void (*rxq_dump)(struct bpfhv_rx_context *ctx);
     void (*txq_dump)(struct bpfhv_tx_context *ctx);
+    void (*rxq_check_alignment)(void);
+    void (*txq_check_alignment)(void);
 
     /* Path of the object file containing the ebpf programs. */
     char *progfile;
