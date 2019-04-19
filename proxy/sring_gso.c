@@ -12,6 +12,32 @@
 #include "backend.h"
 #include "sring_gso.h"
 
+#define MY_CACHELINE_SIZE   64
+
+static void
+sring_gso_rx_check_alignment(void)
+{
+    struct sring_gso_rx_context *priv = NULL;
+
+    assert(((uintptr_t)&priv->prod) % MY_CACHELINE_SIZE == 0);
+    assert(((uintptr_t)&priv->cons) % MY_CACHELINE_SIZE == 0);
+    assert(((uintptr_t)&priv->qmask) % MY_CACHELINE_SIZE == 0);
+    assert(((uintptr_t)&priv->clear) % MY_CACHELINE_SIZE == 0);
+    assert(((uintptr_t)&priv->desc[0]) % MY_CACHELINE_SIZE == 0);
+}
+
+static void
+sring_gso_tx_check_alignment(void)
+{
+    struct sring_gso_tx_context *priv = NULL;
+
+    assert(((uintptr_t)&priv->prod) % MY_CACHELINE_SIZE == 0);
+    assert(((uintptr_t)&priv->cons) % MY_CACHELINE_SIZE == 0);
+    assert(((uintptr_t)&priv->qmask) % MY_CACHELINE_SIZE == 0);
+    assert(((uintptr_t)&priv->clear) % MY_CACHELINE_SIZE == 0);
+    assert(((uintptr_t)&priv->desc[0]) % MY_CACHELINE_SIZE == 0);
+}
+
 static size_t
 sring_gso_rx_ctx_size(size_t num_rx_bufs)
 {
@@ -379,6 +405,8 @@ sring_gso_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
 }
 
 BeOps sring_gso_ops = {
+    .rx_check_alignment = sring_gso_rx_check_alignment,
+    .tx_check_alignment = sring_gso_tx_check_alignment,
     .rx_ctx_size = sring_gso_rx_ctx_size,
     .tx_ctx_size = sring_gso_tx_ctx_size,
     .rx_ctx_init = sring_gso_rx_ctx_init,

@@ -1346,6 +1346,17 @@ tap_alloc(const char *ifname, int vnet_hdr_len, int csum, int gso)
 }
 
 static void
+check_alignments(void)
+{
+    sring_ops.rx_check_alignment();
+    sring_ops.tx_check_alignment();
+    sring_gso_ops.rx_check_alignment();
+    sring_gso_ops.tx_check_alignment();
+    vring_packed_ops.rx_check_alignment();
+    vring_packed_ops.tx_check_alignment();
+}
+
+static void
 usage(const char *progname)
 {
     printf("%s:\n"
@@ -1375,6 +1386,8 @@ main(int argc, char **argv)
     int opt;
     int cfd;
     int ret;
+
+    check_alignments();
 
     be.backend = "tap";
     be.pidfile = NULL;
