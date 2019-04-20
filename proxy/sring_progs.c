@@ -25,7 +25,7 @@ __section("txp")
 int sring_txp(struct bpfhv_tx_context *ctx)
 {
     struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
-    struct bpfhv_tx_buf *txb = ctx->bufs + 0;
+    struct bpfhv_buf *txb = ctx->bufs + 0;
     uint32_t prod = priv->prod;
     struct sring_tx_desc *txd;
 
@@ -55,7 +55,7 @@ static inline void
 sring_tx_get_one(struct bpfhv_tx_context *ctx,
                  struct sring_tx_context *priv)
 {
-    struct bpfhv_tx_buf *txb = ctx->bufs + 0;
+    struct bpfhv_buf *txb = ctx->bufs + 0;
     struct sring_tx_desc *txd;
 
     txd = priv->desc + (priv->clear & priv->qmask);
@@ -150,7 +150,7 @@ int sring_rxp(struct bpfhv_rx_context *ctx)
     }
 
     for (i = 0; i < ctx->num_bufs; i++, prod++) {
-        struct bpfhv_rx_buf *rxb = ctx->bufs + i;
+        struct bpfhv_buf *rxb = ctx->bufs + i;
 
         rxd = priv->desc + (prod & priv->qmask);
         rxd->cookie = rxb->cookie;
@@ -177,7 +177,7 @@ int sring_rxc(struct bpfhv_rx_context *ctx)
     struct sring_rx_context *priv = (struct sring_rx_context *)ctx->opaque;
     uint32_t clear = priv->clear;
     uint32_t cons = ACCESS_ONCE(priv->cons);
-    struct bpfhv_rx_buf *rxb = ctx->bufs + 0;
+    struct bpfhv_buf *rxb = ctx->bufs + 0;
     struct sring_rx_desc *rxd;
     int ret;
 
@@ -224,7 +224,7 @@ int sring_rxr(struct bpfhv_rx_context *ctx)
     smp_mb_acquire();
 
     for (; clear != prod && i < BPFHV_MAX_RX_BUFS; i++) {
-        struct bpfhv_rx_buf *rxb = ctx->bufs + i;
+        struct bpfhv_buf *rxb = ctx->bufs + i;
         struct sring_rx_desc *rxd;
 
         rxd = priv->desc + (clear & priv->qmask);

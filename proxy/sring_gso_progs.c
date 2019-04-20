@@ -65,7 +65,7 @@ int sring_gso_txp(struct bpfhv_tx_context *ctx)
     }
 
     for (i = 0; i < ctx->num_bufs; i++, prod++) {
-        struct bpfhv_tx_buf *txb = ctx->bufs + i;
+        struct bpfhv_buf *txb = ctx->bufs + i;
 
         txd = priv->desc + (prod & priv->qmask);
         txd->cookie = txb->cookie;
@@ -113,7 +113,7 @@ sring_gso_tx_get_one(struct bpfhv_tx_context *ctx,
     uint32_t i;
 
     for (i = 0; i < BPFHV_MAX_TX_BUFS; ) {
-        struct bpfhv_tx_buf *txb = ctx->bufs + i;
+        struct bpfhv_buf *txb = ctx->bufs + i;
         struct sring_gso_tx_desc *txd;
 
         txd = priv->desc + (priv->clear & priv->qmask);
@@ -214,7 +214,7 @@ int sring_gso_rxp(struct bpfhv_rx_context *ctx)
     }
 
     for (i = 0; i < ctx->num_bufs; i++, prod++) {
-        struct bpfhv_rx_buf *rxb = ctx->bufs + i;
+        struct bpfhv_buf *rxb = ctx->bufs + i;
 
         rxd = priv->desc + (prod & priv->qmask);
         rxd->cookie = rxb->cookie;
@@ -255,7 +255,7 @@ int sring_gso_rxc(struct bpfhv_rx_context *ctx)
 
     /* Prepare the input arguments for rx_pkt_alloc(). */
     for (i = 0; clear != cons && i < BPFHV_MAX_RX_BUFS;) {
-        struct bpfhv_rx_buf *rxb = ctx->bufs + i;
+        struct bpfhv_buf *rxb = ctx->bufs + i;
 
         rxd = priv->desc + (clear & priv->qmask);
         clear++;
@@ -319,7 +319,7 @@ int sring_gso_rxr(struct bpfhv_rx_context *ctx)
     smp_mb_acquire();
 
     for (; clear != prod && i < BPFHV_MAX_RX_BUFS; i++) {
-        struct bpfhv_rx_buf *rxb = ctx->bufs + i;
+        struct bpfhv_buf *rxb = ctx->bufs + i;
         struct sring_gso_rx_desc *rxd;
 
         rxd = priv->desc + (clear & priv->qmask);

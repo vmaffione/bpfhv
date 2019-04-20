@@ -727,7 +727,7 @@ BPF_CALL_1(bpf_hv_rx_pkt_alloc, struct bpfhv_rx_context *, ctx)
 	}
 
 	for (i = 0; i < ctx->num_bufs; i++) {
-		struct bpfhv_rx_buf *rxb = ctx->bufs + i;
+		struct bpfhv_buf *rxb = ctx->bufs + i;
 		void *kbuf = (void *)rxb->cookie;
 		struct page *page = virt_to_head_page(kbuf);
 
@@ -794,7 +794,7 @@ err:
 	/* Only the first iteration of the loop above can fail, so we can
 	 * start from the second one. */
 	for (i = 1; i < ctx->num_bufs; i++) {
-		struct bpfhv_rx_buf *rxb = ctx->bufs + i;
+		struct bpfhv_buf *rxb = ctx->bufs + i;
 		void *kbuf = (void *)rxb->cookie;
 		struct page *page = virt_to_head_page(kbuf);
 
@@ -1535,7 +1535,7 @@ bpfhv_resources_dealloc(struct bpfhv_info *bi)
 			}
 
 			for (j = 0; j < ctx->num_bufs; j++) {
-				struct bpfhv_rx_buf *rxb = ctx->bufs + j;
+				struct bpfhv_buf *rxb = ctx->bufs + j;
 				void *kbuf = (void *)rxb->cookie;
 
 				BUG_ON(kbuf == NULL);
@@ -1638,7 +1638,7 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 				frag->page_offset, len, DMA_TO_DEVICE);
 		if (unlikely(dma_mapping_error(dev, dma))) {
 			for (i--; i >= 0; i--) {
-				struct bpfhv_tx_buf *txb = ctx->bufs + i;
+				struct bpfhv_buf *txb = ctx->bufs + i;
 
 				if (txb->cookie & F_MAPPED_AS_PAGE) {
 					dma_unmap_page(dev, txb->paddr,
@@ -1781,7 +1781,7 @@ bpfhv_tx_ctx_clean(struct bpfhv_txq *txq, bool in_napi)
 	int i;
 
 	for (i = 0; i < ctx->num_bufs; i++) {
-		struct bpfhv_tx_buf *txb = ctx->bufs + i;
+		struct bpfhv_buf *txb = ctx->bufs + i;
 
 		if (i == 0) {
 			skb = (struct sk_buff *)
@@ -1821,7 +1821,7 @@ bpfhv_rx_refill(struct bpfhv_rxq *rxq, gfp_t gfp)
 
 		/* Prepare the context for publishing receive buffers. */
 		for (i = 0; i < n; i++) {
-			struct bpfhv_rx_buf *rxb = ctx->bufs + i;
+			struct bpfhv_buf *rxb = ctx->bufs + i;
 			size_t truesize, bufsize, pad;
 			dma_addr_t dma;
 			void *kbuf;

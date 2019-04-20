@@ -15,7 +15,7 @@ static int BPFHV_FUNC(smp_mb_full);
 #define smp_mb_acquire()    compiler_barrier()
 
 static inline void
-vring_packed_add(struct vring_packed_virtq *vq, struct bpfhv_tx_buf *txb)
+vring_packed_add(struct vring_packed_virtq *vq, struct bpfhv_buf *txb)
 {
     struct vring_packed_desc_state *state = vring_packed_state(vq);
     uint16_t head_avail_idx;
@@ -75,7 +75,7 @@ __section("txp")
 int vring_packed_txp(struct bpfhv_tx_context *ctx)
 {
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
-    struct bpfhv_tx_buf *txb = ctx->bufs + 0;
+    struct bpfhv_buf *txb = ctx->bufs + 0;
 
     if (ctx->num_bufs != 1) {
         return -1;
@@ -116,7 +116,7 @@ vring_packed_more_pending(struct vring_packed_virtq *vq)
 }
 
 static inline int
-vring_packed_get(struct vring_packed_virtq *vq, struct bpfhv_tx_buf *txb)
+vring_packed_get(struct vring_packed_virtq *vq, struct bpfhv_buf *txb)
 {
     struct vring_packed_desc_state *state = vring_packed_state(vq);
     uint16_t used_idx;
@@ -149,7 +149,7 @@ __section("txc")
 int vring_packed_txc(struct bpfhv_tx_context *ctx)
 {
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
-    struct bpfhv_tx_buf *txb = ctx->bufs + 0;
+    struct bpfhv_buf *txb = ctx->bufs + 0;
     int ret;
 
     if (!vring_packed_more_used(vq)) {
@@ -169,7 +169,7 @@ __section("txr")
 int sring_txr(struct bpfhv_tx_context *ctx)
 {
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
-    struct bpfhv_tx_buf *txb = ctx->bufs + 0;
+    struct bpfhv_buf *txb = ctx->bufs + 0;
     int ret;
 
     if (!vring_packed_more_pending(vq)) {
@@ -211,9 +211,9 @@ int sring_rxp(struct bpfhv_rx_context *ctx)
     }
 
     for (i = 0; i < ctx->num_bufs; i++) {
-        struct bpfhv_rx_buf *rxb = ctx->bufs + i;
+        struct bpfhv_buf *rxb = ctx->bufs + i;
 
-        vring_packed_add(vq, (struct bpfhv_tx_buf *)rxb);
+        vring_packed_add(vq, (struct bpfhv_buf *)rxb);
 
     }
     ctx->oflags = vring_packed_kick_needed(vq) ? BPFHV_OFLAGS_KICK_NEEDED : 0;
@@ -225,14 +225,14 @@ __section("rxc")
 int sring_rxc(struct bpfhv_rx_context *ctx)
 {
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
-    struct bpfhv_rx_buf *rxb = ctx->bufs + 0;
+    struct bpfhv_buf *rxb = ctx->bufs + 0;
     int ret;
 
     if (!vring_packed_more_used(vq)) {
         return 0;
     }
 
-    ret = vring_packed_get(vq, (struct bpfhv_rx_buf *)rxb);
+    ret = vring_packed_get(vq, (struct bpfhv_buf *)rxb);
     if (ret == 0) {
         ctx->num_bufs = 1;
         ctx->oflags = 0;
@@ -257,10 +257,10 @@ int sring_rxr(struct bpfhv_rx_context *ctx)
     }
 
     for (i = 0; i < BPFHV_MAX_RX_BUFS; i++) {
-        struct bpfhv_rx_buf *rxb = ctx->bufs + i;
+        struct bpfhv_buf *rxb = ctx->bufs + i;
         int ret;
 
-        ret = vring_packed_get(vq, (struct bpfhv_rx_buf *)rxb);
+        ret = vring_packed_get(vq, (struct bpfhv_buf *)rxb);
         if (ret) {
             if (i == 0) {
                 return ret;

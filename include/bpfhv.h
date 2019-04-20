@@ -34,7 +34,7 @@
 extern "C" {
 #endif
 
-struct bpfhv_tx_buf {
+struct bpfhv_buf {
 	uint64_t cookie;
 	uint64_t paddr;
 	uint64_t vaddr;
@@ -79,18 +79,10 @@ struct bpfhv_tx_context {
 	uint32_t		min_intr_nsecs;
 	uint32_t		reserved[3];
 
-	struct bpfhv_tx_buf	bufs[BPFHV_MAX_TX_BUFS];
+	struct bpfhv_buf	bufs[BPFHV_MAX_TX_BUFS];
 
 	/* Private hv-side context follows here. */
 	char			opaque[0];
-};
-
-struct bpfhv_rx_buf {
-	uint64_t cookie;
-	uint64_t paddr;
-	uint64_t vaddr;
-	uint32_t len;
-	uint32_t reserved;
 };
 
 /* Context for the receive-side eBPF programs. */
@@ -125,7 +117,7 @@ struct bpfhv_rx_context {
 	uint32_t		min_intr_nsecs;
 	uint32_t		reserved[3];
 
-	struct bpfhv_rx_buf	bufs[BPFHV_MAX_RX_BUFS];
+	struct bpfhv_buf	bufs[BPFHV_MAX_RX_BUFS];
 
 	/* Private hv-side context follows here. */
 	char			opaque[0];
