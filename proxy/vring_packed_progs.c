@@ -15,7 +15,8 @@ static int BPFHV_FUNC(smp_mb_full);
 #define smp_mb_acquire()    compiler_barrier()
 
 static inline void
-vring_packed_add(struct vring_packed_virtq *vq, struct bpfhv_buf *txb)
+vring_packed_add(struct vring_packed_virtq *vq, struct bpfhv_buf *b,
+                 uint16_t flags)
 {
     struct vring_packed_desc_state *state = vring_packed_state(vq);
     uint16_t head_avail_idx;
@@ -25,13 +26,13 @@ vring_packed_add(struct vring_packed_virtq *vq, struct bpfhv_buf *txb)
     uint16_t id;
 
     head_avail_idx = avail_idx = vq->next_avail_idx;
-    head_flags = vq->avail_used_flags;
+    head_flags = vq->avail_used_flags | flags;
     id = state_idx = vq->next_free_id;
 
-    vq->desc[avail_idx].addr = txb->paddr;
-    vq->desc[avail_idx].len = txb->len;
+    vq->desc[avail_idx].addr = b->paddr;
+    vq->desc[avail_idx].len = b->len;
     vq->desc[avail_idx].id = id;
-    state[state_idx].cookie = txb->cookie;
+    state[state_idx].cookie = b->cookie;
 
     if (++avail_idx >= vq->num_desc) {
         avail_idx = 0;
@@ -43,8 +44,10 @@ vring_packed_add(struct vring_packed_virtq *vq, struct bpfhv_buf *txb)
     vq->next_avail_idx = avail_idx;
     vq->next_free_id = state[id].next;
     state[id].busy = 1;
+#if 0
     state[id].num = 1;
     state[id].last = id;
+#endif
 
     /* Publish the new descriptor chain by exposing the flags of the first
      * descriptor in the chain. */
@@ -81,7 +84,7 @@ int vring_packed_txp(struct bpfhv_tx_context *ctx)
         return -1;
     }
 
-    vring_packed_add(vq, txb);
+    vring_packed_add(vq, txb, 0);
     ctx->oflags = vring_packed_kick_needed(vq) ? BPFHV_OFLAGS_KICK_NEEDED : 0;
 
     return 0;
@@ -213,7 +216,7 @@ int sring_rxp(struct bpfhv_rx_context *ctx)
     for (i = 0; i < ctx->num_bufs; i++) {
         struct bpfhv_buf *rxb = ctx->bufs + i;
 
-        vring_packed_add(vq, rxb);
+        vring_packed_add(vq, rxb, VRING_DESC_F_WRITE);
 
     }
     ctx->oflags = vring_packed_kick_needed(vq) ? BPFHV_OFLAGS_KICK_NEEDED : 0;

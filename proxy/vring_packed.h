@@ -72,14 +72,14 @@ struct vring_packed_desc {
 struct vring_packed_desc_state {
     /* Guest cookie associated to this descriptor. */
     uint64_t cookie;
+    /* Is this entry busy or free ? */
+    uint16_t busy;
     /* Number of descriptors in the chain. */
     uint16_t num;
     /* Next descriptor state in the chain. */
     uint16_t next;
     /* Last descriptor state in the chain. */
     uint16_t last;
-    /* Is this entry busy or free ? */
-    uint16_t busy;
 };
 
 struct vring_packed_desc_event {
