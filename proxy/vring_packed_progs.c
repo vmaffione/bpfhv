@@ -213,7 +213,7 @@ int sring_rxp(struct bpfhv_rx_context *ctx)
     for (i = 0; i < ctx->num_bufs; i++) {
         struct bpfhv_buf *rxb = ctx->bufs + i;
 
-        vring_packed_add(vq, (struct bpfhv_buf *)rxb);
+        vring_packed_add(vq, rxb);
 
     }
     ctx->oflags = vring_packed_kick_needed(vq) ? BPFHV_OFLAGS_KICK_NEEDED : 0;
@@ -232,7 +232,7 @@ int sring_rxc(struct bpfhv_rx_context *ctx)
         return 0;
     }
 
-    ret = vring_packed_get(vq, (struct bpfhv_buf *)rxb);
+    ret = vring_packed_get(vq, rxb);
     if (ret == 0) {
         ctx->num_bufs = 1;
         ctx->oflags = 0;
@@ -260,7 +260,7 @@ int sring_rxr(struct bpfhv_rx_context *ctx)
         struct bpfhv_buf *rxb = ctx->bufs + i;
         int ret;
 
-        ret = vring_packed_get(vq, (struct bpfhv_buf *)rxb);
+        ret = vring_packed_get(vq, rxb);
         if (ret) {
             if (i == 0) {
                 return ret;
