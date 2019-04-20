@@ -24,6 +24,37 @@
 
 #include <stdint.h>
 
+/* This marks a buffer as continuing via the next field. */
+#define VRING_DESC_F_NEXT	1
+/* This marks a buffer as write-only (otherwise read-only). */
+#define VRING_DESC_F_WRITE	2
+/* This means the buffer contains a list of buffer descriptors. */
+#define VRING_DESC_F_INDIRECT	4
+
+/* Enable events in packed ring. */
+#define VRING_PACKED_EVENT_FLAG_ENABLE	0x0
+/* Disable events in packed ring. */
+#define VRING_PACKED_EVENT_FLAG_DISABLE	0x1
+/*
+ * Enable events for a specific descriptor in packed ring.
+ * (as specified by Descriptor Ring Change Event Offset/Wrap Counter).
+ * Only valid if VIRTIO_RING_F_EVENT_IDX has been negotiated.
+ */
+#define VRING_PACKED_EVENT_FLAG_DESC	0x2
+
+/*
+ * Wrap counter bit shift in event suppression structure
+ * of packed ring.
+ */
+#define VRING_PACKED_EVENT_F_WRAP_CTR	15
+/*
+ * Mark a descriptor as available or used in packed ring.
+ * Notice: they are defined as shifts instead of shifted values.
+ */
+#define VRING_PACKED_DESC_F_AVAIL	7
+#define VRING_PACKED_DESC_F_USED	15
+
+
 #define MY_CACHELINE_SIZE   64
 #define MY_CACHELINE_ALIGNED    __attribute__((aligned(MY_CACHELINE_SIZE)))
 
@@ -47,7 +78,8 @@ struct vring_packed_desc_state {
     uint16_t next;
     /* Last descriptor state in the chain. */
     uint16_t last;
-    uint16_t pad1;
+    /* Is this entry busy or free ? */
+    uint16_t busy;
 };
 
 struct vring_packed_desc_event {
@@ -59,11 +91,17 @@ struct vring_packed_desc_event {
 
 struct vring_packed_virtq {
     /* Producer private. */
-    uint32_t next_free_id;
-    uint32_t next_avail_idx;
-    uint32_t next_used_idx;
+    uint16_t next_free_id;
+    uint16_t next_avail_idx;
+    uint16_t next_used_idx;
     uint8_t avail_wrap_counter;
     uint8_t used_wrap_counter;
+    uint16_t avail_used_flags;
+
+    /* Read only. */
+    MY_CACHELINE_ALIGNED
+    uint64_t state_ofs;
+    uint32_t num_desc;
 
     MY_CACHELINE_ALIGNED
     struct vring_packed_desc_event driver_event;
@@ -77,5 +115,12 @@ struct vring_packed_virtq {
  *  struct vring_packed_desc_state state[0];
  */
 };
+
+/* Only valid after initialization. */
+struct vring_packed_desc_state *
+vring_packed_state(const struct vring_packed_virtq *vq)
+{
+    return (struct vring_packed_desc_state *)(((uintptr_t)vq) + vq->state_ofs);
+}
 
 #endif  /* __BPFHV_VRING_PACKED_H__ */

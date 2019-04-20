@@ -15,6 +15,8 @@
 #endif
 #define compiler_barrier() __asm__ __volatile__ ("");
 
+#define ROUNDUP(sz, one) ((((sz) + (one) - 1) / (one)) * (one))
+
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 
 #define BPFHV_MAX_QUEUES        16
