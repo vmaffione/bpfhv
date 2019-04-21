@@ -10,7 +10,7 @@ vring_packed_rx_check_alignment(void)
 {
     struct vring_packed_virtq *vq = NULL;
 
-    assert(((uintptr_t)&vq->next_free_id) % MY_CACHELINE_SIZE == 0);
+    assert(((uintptr_t)&vq->g.next_free_id) % MY_CACHELINE_SIZE == 0);
     assert(((uintptr_t)&vq->state_ofs) % MY_CACHELINE_SIZE == 0);
     assert(((uintptr_t)&vq->driver_event) % MY_CACHELINE_SIZE == 0);
     assert(((uintptr_t)&vq->device_event) % MY_CACHELINE_SIZE == 0);
@@ -51,12 +51,12 @@ vring_packed_init(struct vring_packed_virtq *vq, size_t num)
 
     memset(vq, 0, vring_packed_rx_ctx_size(num));
 
-    vq->next_free_id = 0;
-    vq->next_avail_idx = 0;
-    vq->next_used_idx = 0;
-    vq->avail_wrap_counter = 1;
-    vq->used_wrap_counter = 1;
-    vq->avail_used_flags = 1 << VRING_PACKED_DESC_F_AVAIL;
+    vq->g.next_free_id = 0;
+    vq->g.next_avail_idx = 0;
+    vq->g.next_used_idx = 0;
+    vq->g.avail_wrap_counter = 1;
+    vq->g.used_wrap_counter = 1;
+    vq->g.avail_used_flags = 1 << VRING_PACKED_DESC_F_AVAIL;
 
     vq->state_ofs = sizeof(struct vring_packed_virtq) + desc_size;
     vq->num_desc = num;

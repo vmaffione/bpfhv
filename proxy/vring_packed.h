@@ -91,12 +91,14 @@ struct vring_packed_desc_event {
 
 struct vring_packed_virtq {
     /* Producer private. */
-    uint16_t next_free_id;
-    uint16_t next_avail_idx;
-    uint16_t next_used_idx;
-    uint8_t avail_wrap_counter;
-    uint8_t used_wrap_counter;
-    uint16_t avail_used_flags;
+    struct {
+        uint16_t next_free_id;
+        uint16_t next_avail_idx;
+        uint16_t next_used_idx;
+        uint8_t avail_wrap_counter;
+        uint8_t used_wrap_counter;
+        uint16_t avail_used_flags;
+    } g;
 
     /* Read only. */
     MY_CACHELINE_ALIGNED

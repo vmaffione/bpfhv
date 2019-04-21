@@ -25,9 +25,9 @@ vring_packed_add(struct vring_packed_virtq *vq, struct bpfhv_buf *b,
     uint16_t state_idx;
     uint16_t id;
 
-    head_avail_idx = avail_idx = vq->next_avail_idx;
-    head_flags = vq->avail_used_flags | flags;
-    id = state_idx = vq->next_free_id;
+    head_avail_idx = avail_idx = vq->g.next_avail_idx;
+    head_flags = vq->g.avail_used_flags | flags;
+    id = state_idx = vq->g.next_free_id;
 
     vq->desc[avail_idx].addr = b->paddr;
     vq->desc[avail_idx].len = b->len;
@@ -36,13 +36,13 @@ vring_packed_add(struct vring_packed_virtq *vq, struct bpfhv_buf *b,
 
     if (++avail_idx >= vq->num_desc) {
         avail_idx = 0;
-        vq->avail_used_flags ^= 1 << VRING_PACKED_DESC_F_AVAIL |
+        vq->g.avail_used_flags ^= 1 << VRING_PACKED_DESC_F_AVAIL |
                                 1 << VRING_PACKED_DESC_F_USED;
-        vq->avail_wrap_counter ^= 1;
+        vq->g.avail_wrap_counter ^= 1;
     }
 
-    vq->next_avail_idx = avail_idx;
-    vq->next_free_id = state[id].next;
+    vq->g.next_avail_idx = avail_idx;
+    vq->g.next_free_id = state[id].next;
     state[id].busy = 1;
 #if 0
     state[id].num = 1;
@@ -93,7 +93,7 @@ int vring_packed_txp(struct bpfhv_tx_context *ctx)
 static inline int
 vring_packed_more_used(struct vring_packed_virtq *vq)
 {
-    uint16_t flags = vq->desc[vq->next_used_idx].flags;
+    uint16_t flags = vq->desc[vq->g.next_used_idx].flags;
     int avail, used;
 
     avail = !!(flags & (1 << VRING_PACKED_DESC_F_AVAIL));
@@ -101,13 +101,13 @@ vring_packed_more_used(struct vring_packed_virtq *vq)
 
     smp_mb_acquire();
 
-    return avail == used && used == vq->used_wrap_counter;
+    return avail == used && used == vq->g.used_wrap_counter;
 }
 
 static inline int
 vring_packed_more_pending(struct vring_packed_virtq *vq)
 {
-    uint16_t flags = vq->desc[vq->next_used_idx].flags;
+    uint16_t flags = vq->desc[vq->g.next_used_idx].flags;
     int avail, used;
 
     avail = !!(flags & (1 << VRING_PACKED_DESC_F_AVAIL));
@@ -115,7 +115,7 @@ vring_packed_more_pending(struct vring_packed_virtq *vq)
 
     smp_mb_acquire();
 
-    return avail != used && used != vq->used_wrap_counter;
+    return avail != used && used != vq->g.used_wrap_counter;
 }
 
 static inline int
@@ -125,7 +125,7 @@ vring_packed_get(struct vring_packed_virtq *vq, struct bpfhv_buf *txb)
     uint16_t used_idx;
     uint16_t id;
 
-    used_idx = vq->next_used_idx;
+    used_idx = vq->g.next_used_idx;
     id = vq->desc[used_idx].id;
     if (id >= vq->num_desc || !state[id].busy) {
         return -1;  /* This is a bug. */
@@ -136,14 +136,14 @@ vring_packed_get(struct vring_packed_virtq *vq, struct bpfhv_buf *txb)
     txb->len = vq->desc[used_idx].len;
 
     state[id].busy = 0;
-    state[id].next = vq->next_free_id;
-    vq->next_free_id = id;
+    state[id].next = vq->g.next_free_id;
+    vq->g.next_free_id = id;
 
     if (++used_idx >= vq->num_desc) {
         used_idx = 0;
-        vq->used_wrap_counter ^= 1;
+        vq->g.used_wrap_counter ^= 1;
     }
-    vq->next_used_idx = used_idx;
+    vq->g.next_used_idx = used_idx;
 
     return 0;
 }
