@@ -58,6 +58,11 @@ vring_packed_init(struct vring_packed_virtq *vq, size_t num)
     vq->g.used_wrap_counter = 1;
     vq->g.avail_used_flags = 1 << VRING_PACKED_DESC_F_AVAIL;
 
+    vq->h.next_avail_idx = 0;
+    vq->h.next_used_idx = 0;
+    vq->h.avail_wrap_counter = 1;
+    vq->h.used_wrap_counter = 1;
+
     vq->state_ofs = sizeof(struct vring_packed_virtq) + desc_size;
     vq->num_desc = num;
 

@@ -100,6 +100,15 @@ struct vring_packed_virtq {
         uint16_t avail_used_flags;
     } g;
 
+    /* Consumer private. */
+    MY_CACHELINE_ALIGNED
+    struct {
+        uint16_t next_avail_idx;
+        uint16_t next_used_idx;
+        uint8_t avail_wrap_counter;
+        uint8_t used_wrap_counter;
+    } h;
+
     /* Read only. */
     MY_CACHELINE_ALIGNED
     uint64_t state_ofs;
