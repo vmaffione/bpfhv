@@ -94,6 +94,29 @@ vring_packed_tx_ctx_init(struct bpfhv_tx_context *ctx, size_t num_tx_bufs)
     vring_packed_init(vq, num_tx_bufs);
 }
 
+static inline void
+__vring_packed_notification(struct vring_packed_virtq *vq, int enable)
+{
+    vq->device_event.flags = enable ? VRING_PACKED_EVENT_FLAG_ENABLE
+                                    : VRING_PACKED_EVENT_FLAG_DISABLE;
+}
+
+static void
+vring_packed_rxq_notification(struct bpfhv_rx_context *ctx, int enable)
+{
+    struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
+
+    __vring_packed_notification(vq, enable);
+}
+
+static void
+vring_packed_txq_notification(struct bpfhv_tx_context *ctx, int enable)
+{
+    struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
+
+    __vring_packed_notification(vq, enable);
+}
+
 BeOps vring_packed_ops = {
     .rx_check_alignment = vring_packed_rx_check_alignment,
     .tx_check_alignment = vring_packed_tx_check_alignment,
@@ -101,11 +124,11 @@ BeOps vring_packed_ops = {
     .tx_ctx_size = vring_packed_tx_ctx_size,
     .rx_ctx_init = vring_packed_rx_ctx_init,
     .tx_ctx_init = vring_packed_tx_ctx_init,
+    .rxq_kicks = vring_packed_rxq_notification,
+    .txq_kicks = vring_packed_txq_notification,
 /*
     .rxq_push = vring_packed_rxq_push,
     .txq_drain = vring_packed_txq_drain,
-    .rxq_kicks = vring_packed_rxq_notification,
-    .txq_kicks = vring_packed_txq_notification,
     .rxq_dump = vring_packed_rxq_dump,
     .txq_dump = vring_packed_txq_dump,
 */
