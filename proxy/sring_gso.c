@@ -82,6 +82,7 @@ __sring_rxq_notification(struct sring_gso_rx_context *priv, int enable)
 {
     priv->kick_enabled = !!enable;
 }
+
 static void
 sring_gso_rxq_notification(struct bpfhv_rx_context *ctx, int enable)
 {
@@ -90,12 +91,18 @@ sring_gso_rxq_notification(struct bpfhv_rx_context *ctx, int enable)
     __sring_rxq_notification(priv, enable);
 }
 
+static inline void
+__sring_gso_txq_notification(struct sring_gso_tx_context *priv, int enable)
+{
+    priv->kick_enabled = !!enable;
+}
+
 static void
 sring_gso_txq_notification(struct bpfhv_tx_context *ctx, int enable)
 {
     struct sring_gso_tx_context *priv = (struct sring_gso_tx_context *)ctx->opaque;
 
-    priv->kick_enabled = !!enable;
+    __sring_gso_txq_notification(priv, enable);
 }
 
 static void
@@ -289,7 +296,7 @@ sring_gso_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
 
     if (can_send) {
         /* Disable further kicks and start processing. */
-        sring_gso_txq_notification(ctx, /*enable=*/0);
+        __sring_gso_txq_notification(priv, /*enable=*/0);
     }
 
     /* Make sure the load of from priv->prod is not delayed after the
@@ -314,14 +321,14 @@ sring_gso_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
                 }
                 /* Re-enable notifications and double check for
                  * more work. */
-                sring_gso_txq_notification(ctx, /*enable=*/1);
+                __sring_gso_txq_notification(priv, /*enable=*/1);
                 __atomic_thread_fence(__ATOMIC_SEQ_CST);
                 prod = ACCESS_ONCE(priv->prod);
                 if (cons == prod) {
                     break;
                 }
                 /* More work found: keep going. */
-                sring_gso_txq_notification(ctx, /*enable=*/0);
+                __sring_gso_txq_notification(priv, /*enable=*/0);
             }
             /* Make sure the load of from priv->prod is not delayed after the
              * loads from the ring. */

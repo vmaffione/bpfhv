@@ -106,7 +106,6 @@ BeOps vring_packed_ops = {
     .txq_drain = vring_packed_txq_drain,
     .rxq_kicks = vring_packed_rxq_notification,
     .txq_kicks = vring_packed_txq_notification,
-    .txq_pending = vring_packed_txq_pending,
     .rxq_dump = vring_packed_rxq_dump,
     .txq_dump = vring_packed_txq_dump,
 */
