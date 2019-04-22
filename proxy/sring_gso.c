@@ -81,9 +81,6 @@ static inline void
 __sring_rxq_notification(struct sring_gso_rx_context *priv, int enable)
 {
     priv->kick_enabled = !!enable;
-    if (enable) {
-        __atomic_thread_fence(__ATOMIC_ACQUIRE);
-    }
 }
 static void
 sring_gso_rxq_notification(struct bpfhv_rx_context *ctx, int enable)
@@ -99,17 +96,6 @@ sring_gso_txq_notification(struct bpfhv_tx_context *ctx, int enable)
     struct sring_gso_tx_context *priv = (struct sring_gso_tx_context *)ctx->opaque;
 
     priv->kick_enabled = !!enable;
-    if (enable) {
-        __atomic_thread_fence(__ATOMIC_ACQUIRE);
-    }
-}
-
-static int
-sring_gso_txq_pending(struct bpfhv_tx_context *ctx)
-{
-    struct sring_gso_tx_context *priv = (struct sring_gso_tx_context *)ctx->opaque;
-
-    return priv->cons != ACCESS_ONCE(priv->prod);
 }
 
 static void
@@ -182,10 +168,8 @@ sring_gso_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
                     goto out;
                 }
                 __sring_rxq_notification(priv, /*enable=*/1);
+                __atomic_thread_fence(__ATOMIC_SEQ_CST);
                 prod = ACCESS_ONCE(priv->prod);
-                /* Make sure the load of from priv->prod is not delayed after the
-                 * loads from the ring. */
-                __atomic_thread_fence(__ATOMIC_ACQUIRE);
                 if (cons == prod) {
                     /* Not enough space. We need to rewind to the first unused
                      * descriptor and stop. */
@@ -194,6 +178,9 @@ sring_gso_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
                     goto out;
                 }
                 __sring_rxq_notification(priv, /*enable=*/0);
+                /* Make sure the load of from priv->prod is not delayed after the
+                 * loads from the ring. */
+                __atomic_thread_fence(__ATOMIC_ACQUIRE);
             }
 
             rxd = priv->desc + (cons & priv->qmask);
@@ -300,14 +287,50 @@ sring_gso_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
     int iovcnt = iovcnt_start;
     int count = 0;
 
+    if (can_send) {
+        /* Disable further kicks and start processing. */
+        sring_gso_txq_notification(ctx, /*enable=*/0);
+    }
+
     /* Make sure the load of from priv->prod is not delayed after the
      * loads from the ring. */
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
 
     txq->notify = 0;
 
-    while (cons != prod) {
+    for (;;) {
         struct sring_gso_tx_desc *txd = priv->desc + (cons & priv->qmask);
+
+        if (unlikely(cons == prod)) {
+            /* Before stopping, check if more work came while we were
+             * not looking at priv->prod. */
+            prod = ACCESS_ONCE(priv->prod);
+            if (cons == prod) {
+                /* We ran out of TX descriptors. In busy-wait mode we can just
+                 * bail out. Otherwise we enable TX kicks and double check for
+                 * more available descriptors. */
+                if (can_send == NULL) {
+                    break;
+                }
+                /* Re-enable notifications and double check for
+                 * more work. */
+                sring_gso_txq_notification(ctx, /*enable=*/1);
+                __atomic_thread_fence(__ATOMIC_SEQ_CST);
+                prod = ACCESS_ONCE(priv->prod);
+                if (cons == prod) {
+                    break;
+                }
+                /* More work found: keep going. */
+                sring_gso_txq_notification(ctx, /*enable=*/0);
+            }
+            /* Make sure the load of from priv->prod is not delayed after the
+             * loads from the ring. */
+            __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        }
+
+        if (unlikely(count >= BPFHV_BE_TX_BUDGET)) {
+            break;
+        }
 
         cons++;
 
@@ -365,22 +388,10 @@ sring_gso_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
             printf("Transmitted iovcnt %u --> %d\n", iovcnt, ret);
 #endif
             txq->stats.bufs += cons - cons_first;
-            if (++count >= BPFHV_BE_TX_BUDGET) {
-                break;
-            }
+            count++;
 
             iovcnt = iovcnt_start;
             cons_first = cons;
-        }
-
-        if (unlikely(cons == prod)) {
-            /* Before stopping, check if more work came while we were
-             * not looking at priv->prod. Note that double-check logic
-             * is done by the caller. */
-            prod = ACCESS_ONCE(priv->prod);
-            /* Make sure the load of from priv->prod is not delayed after the
-             * loads from the ring. */
-            __atomic_thread_fence(__ATOMIC_ACQUIRE);
         }
     }
 
@@ -415,7 +426,6 @@ BeOps sring_gso_ops = {
     .txq_drain = sring_gso_txq_drain,
     .rxq_kicks = sring_gso_rxq_notification,
     .txq_kicks = sring_gso_txq_notification,
-    .txq_pending = sring_gso_txq_pending,
     .rxq_dump = sring_gso_rxq_dump,
     .txq_dump = sring_gso_txq_dump,
     .progfile = "proxy/sring_gso_progs.o",

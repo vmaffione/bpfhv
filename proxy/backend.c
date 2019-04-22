@@ -375,8 +375,6 @@ process_packets_poll(BpfhvBackend *be)
             struct bpfhv_tx_context *ctx = txq->ctx.tx;
             size_t count;
 
-            /* Disable further kicks and start processing. */
-            ops.txq_kicks(ctx, /*enable=*/0);
             can_send = 1;
             count = ops.txq_drain(be, txq, &can_send);
             if (txq->notify) {
@@ -390,16 +388,6 @@ process_packets_poll(BpfhvBackend *be)
                 /* Out of budget. Make sure next poll() does not block,
                  * so that we can keep processing in the next iteration. */
                 poll_timeout = 0;
-            } else {
-                /* Re-enable notifications and double check for
-                 * more work. */
-                ops.txq_kicks(ctx, /*enable=*/1);
-                if (unlikely(ops.txq_pending(ctx))) {
-                    /* More work found. We will process it in the
-                     * next iteration. */
-                    ops.txq_kicks(ctx, /*enable=*/0);
-                    poll_timeout = 0;
-                }
             }
             if (unlikely(very_verbose && count > 0)) {
                 ops.txq_dump(ctx);

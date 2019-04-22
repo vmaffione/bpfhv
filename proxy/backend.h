@@ -74,7 +74,6 @@ typedef struct BeOps {
                        BpfhvBackendQueue *txq, int *can_send);
     void (*rxq_kicks)(struct bpfhv_rx_context *ctx, int enable);
     void (*txq_kicks)(struct bpfhv_tx_context *ctx, int enable);
-    int (*txq_pending)(struct bpfhv_tx_context *ctx);
     void (*rxq_dump)(struct bpfhv_rx_context *ctx);
     void (*txq_dump)(struct bpfhv_tx_context *ctx);
 
