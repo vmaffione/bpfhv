@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
 #include <string.h>
@@ -117,6 +118,46 @@ vring_packed_txq_notification(struct bpfhv_tx_context *ctx, int enable)
     __vring_packed_notification(vq, enable);
 }
 
+static void
+vring_packed_dump(struct vring_packed_virtq *vq, const char *suffix)
+{
+    printf("vringpacked.%s g.avl %u g.usd %u g.wrp %u:%u "
+            "h.avl %u h.usd %u h.wrp %u:%u\n",
+            suffix, vq->g.next_avail_idx, vq->g.next_used_idx,
+            vq->g.avail_wrap_counter, vq->g.used_wrap_counter,
+            vq->h.next_avail_idx, vq->h.next_used_idx,
+            vq->h.avail_wrap_counter, vq->h.used_wrap_counter);
+}
+
+static void
+vring_packed_rxq_dump(struct bpfhv_rx_context *ctx)
+{
+    struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
+
+    vring_packed_dump(vq, "rxq");
+}
+
+static void
+vring_packed_txq_dump(struct bpfhv_tx_context *ctx)
+{
+    struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
+
+    vring_packed_dump(vq, "txq");
+}
+
+static size_t
+vring_packed_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
+                      int *can_receive)
+{
+    return 0;
+}
+
+static size_t
+vring_packed_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
+{
+    return 0;
+}
+
 BeOps vring_packed_ops = {
     .rx_check_alignment = vring_packed_rx_check_alignment,
     .tx_check_alignment = vring_packed_tx_check_alignment,
@@ -126,11 +167,9 @@ BeOps vring_packed_ops = {
     .tx_ctx_init = vring_packed_tx_ctx_init,
     .rxq_kicks = vring_packed_rxq_notification,
     .txq_kicks = vring_packed_txq_notification,
-/*
     .rxq_push = vring_packed_rxq_push,
     .txq_drain = vring_packed_txq_drain,
     .rxq_dump = vring_packed_rxq_dump,
     .txq_dump = vring_packed_txq_dump,
-*/
     .progfile = "proxy/vring_packed_progs.o",
 };
