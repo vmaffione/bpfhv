@@ -1456,6 +1456,11 @@ main(int argc, char **argv)
                 return -1;
             }
             break;
+
+        default:
+            usage(argv[0]);
+            return -1;
+            break;
         }
     }
 
