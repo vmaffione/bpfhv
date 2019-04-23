@@ -907,6 +907,12 @@ BPF_CALL_0(bpf_hv_smp_mb_full)
 	return 0;
 }
 
+BPF_CALL_2(bpf_hv_print_num, const char *, str, long long int, x)
+{
+    printk("%s: %lld\n", str, x);
+    return 0;
+}
+
 #undef PROGDUMP
 #ifdef PROGDUMP
 static void
@@ -1213,6 +1219,9 @@ bpfhv_helper_calls_fixup(struct bpfhv_info *bi, struct bpf_insn *insns,
 			break;
 		case BPFHV_FUNC_smp_mb_full:
 			func = bpf_hv_smp_mb_full;
+			break;
+		case BPFHV_FUNC_print_num:
+			func = bpf_hv_print_num;
 			break;
 		default:
 			netif_err(bi, drv, bi->netdev,
