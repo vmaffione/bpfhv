@@ -52,7 +52,7 @@ vring_packed_add(struct vring_packed_virtq *vq, struct bpfhv_buf *b,
     /* Publish the new descriptor chain by exposing the flags of the first
      * descriptor in the chain. */
     smp_mb_release();
-    vq->desc[avail_idx].flags = head_flags;
+    vq->desc[head_avail_idx].flags = head_flags;
 }
 
 /* Check if the hypervisor needs a notification. */
