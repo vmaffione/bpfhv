@@ -108,6 +108,8 @@ struct vring_packed_virtq {
         uint8_t avail_wrap_counter;
         uint8_t used_wrap_counter;
         uint16_t avail_used_flags;
+        /* Shadow variable for vq->device_event.flags */
+        uint16_t device_event_flags;
     } h;
 
     /* Read only. */

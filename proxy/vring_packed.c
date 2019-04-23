@@ -46,6 +46,14 @@ vring_packed_tx_ctx_size(size_t num_tx_bufs)
     return vring_packed_rx_ctx_size(num_tx_bufs);
 }
 
+static inline void
+vring_packed_notification(struct vring_packed_virtq *vq, int enable)
+{
+    vq->device_event.flags = vq->h.device_event_flags =
+            enable ? VRING_PACKED_EVENT_FLAG_ENABLE
+                   : VRING_PACKED_EVENT_FLAG_DISABLE;
+}
+
 static void
 vring_packed_init(struct vring_packed_virtq *vq, size_t num)
 {
@@ -76,7 +84,7 @@ vring_packed_init(struct vring_packed_virtq *vq, size_t num)
 
     vq->driver_event.flags = VRING_PACKED_EVENT_FLAG_ENABLE;
     vq->driver_event.off_wrap = 0;
-    vq->device_event.flags = VRING_PACKED_EVENT_FLAG_ENABLE;
+    vring_packed_notification(vq, /*enable=*/1);
     vq->device_event.off_wrap = 0;
 
     state = vring_packed_state(vq);
@@ -100,13 +108,6 @@ vring_packed_tx_ctx_init(struct bpfhv_tx_context *ctx, size_t num_tx_bufs)
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
 
     vring_packed_init(vq, num_tx_bufs);
-}
-
-static inline void
-vring_packed_notification(struct vring_packed_virtq *vq, int enable)
-{
-    vq->device_event.flags = enable ? VRING_PACKED_EVENT_FLAG_ENABLE
-                                    : VRING_PACKED_EVENT_FLAG_DISABLE;
 }
 
 static void
@@ -152,13 +153,6 @@ vring_packed_txq_dump(struct bpfhv_tx_context *ctx)
     vring_packed_dump(vq, "txq");
 }
 
-static size_t
-vring_packed_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
-                      int *can_receive)
-{
-    return 0;
-}
-
 static inline int
 vring_packed_more_avail(struct vring_packed_virtq *vq)
 {
@@ -173,6 +167,124 @@ vring_packed_more_avail(struct vring_packed_virtq *vq)
     return avail != used && avail == vq->h.avail_wrap_counter;
 }
 
+static inline void
+vring_packed_advance_avail(struct vring_packed_virtq *vq)
+{
+    if (unlikely(++vq->h.next_avail_idx >= vq->num_desc)) {
+        vq->h.next_avail_idx = 0;
+        vq->h.avail_wrap_counter ^= 1;
+    }
+}
+
+static inline void
+vring_packed_advance_used(struct vring_packed_virtq *vq)
+{
+    if (unlikely(++vq->h.next_used_idx >= vq->num_desc)) {
+        vq->h.next_used_idx = 0;
+        vq->h.used_wrap_counter ^= 1;
+        vq->h.avail_used_flags ^= 1 << VRING_PACKED_DESC_F_AVAIL |
+                                  1 << VRING_PACKED_DESC_F_USED;
+    }
+}
+
+static inline int
+vring_packed_intr_needed(struct vring_packed_virtq *vq)
+{
+    return ACCESS_ONCE(vq->driver_event.flags) == VRING_PACKED_EVENT_FLAG_ENABLE;
+}
+
+static size_t
+vring_packed_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
+                      int *can_receive)
+{
+    struct bpfhv_rx_context *ctx = rxq->ctx.rx;
+    struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
+    size_t count = 0;
+
+    if (unlikely(vq->h.device_event_flags != VRING_PACKED_EVENT_FLAG_ENABLE)) {
+        vring_packed_notification(vq, /*enable=*/0);
+    }
+
+    rxq->notify = 0;
+
+    for (;;) {
+        uint16_t avail_idx = vq->h.next_avail_idx;
+        uint16_t used_idx = vq->h.next_used_idx;
+        struct vring_packed_desc *desc;
+        struct iovec iov;
+        ssize_t pktsize;
+
+        if (!vring_packed_more_avail(vq)) {
+            /* We ran out of RX descriptors. In busy-wait mode we can just
+             * bail out. Otherwise we enable RX kicks and double check for
+             * more available descriptors. */
+            if (can_receive == NULL) {
+                break;
+            }
+            vring_packed_notification(vq, /*enable=*/1);
+            __atomic_thread_fence(__ATOMIC_SEQ_CST);
+            if (!vring_packed_more_avail(vq)) {
+                break;
+            }
+            vring_packed_notification(vq, /*enable=*/0);
+        }
+
+        if (unlikely(count >= BPFHV_BE_RX_BUDGET)) {
+            break;
+        }
+
+        desc = vq->desc + avail_idx;
+        iov.iov_base = translate_addr(be, desc->addr, desc->len);
+        if (unlikely(avail_idx != used_idx)) {
+            /* Descriptor rewrite is needed only in case of out of order,
+             * processing (not implemented). */
+            vq->desc[used_idx] = *desc;
+        }
+        if (unlikely(iov.iov_base == NULL)) {
+            /* Invalid descriptor. */
+            vq->desc[used_idx].len = 0;
+            if (verbose) {
+                fprintf(stderr, "Invalid RX descriptor: gpa%"PRIx64", "
+                                "len %u\n", desc->addr, desc->len);
+            }
+        } else {
+            iov.iov_len = desc->len;
+            /* Read into the scatter-gather buffer referenced by the collected
+             * descriptors. */
+            pktsize = be->recv(be, &iov, 1);
+            if (pktsize <= 0) {
+                /* No more data to read (or error). We need to stop. */
+                if (unlikely(pktsize < 0 && errno != EAGAIN)) {
+                    fprintf(stderr, "recv() failed: %s\n", strerror(errno));
+                }
+                break;
+            }
+
+            /* Write back to the receive descriptor used. */
+            vq->desc[used_idx].len = pktsize;
+        }
+
+        /* Expose the used descriptor, and advance avail and used indices. */
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+        vq->desc[used_idx].flags = vq->h.avail_used_flags;
+        vring_packed_advance_avail(vq);
+        vring_packed_advance_used(vq);
+        rxq->stats.bufs++;
+        count++;
+    }
+
+    if (count > 0) {
+        /* Store-load barrier to make sure stores to the descriptors
+         * happen before the load from vq->driver_event */
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        rxq->notify = vring_packed_intr_needed(vq);
+        rxq->stats.pkts += count;
+        rxq->stats.batches++;
+    }
+
+    return count;
+}
+
 static size_t
 vring_packed_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
 {
@@ -185,12 +297,20 @@ vring_packed_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
         vring_packed_notification(vq, /*enable=*/0);
     }
 
+    txq->notify = 0;
+
     for (;;) {
         uint16_t avail_idx = vq->h.next_avail_idx;
         uint16_t used_idx = vq->h.next_used_idx;
         struct iovec iov;
 
         if (!vring_packed_more_avail(vq)) {
+            /* We ran out of TX descriptors. In busy-wait mode we can just
+             * bail out. Otherwise we enable TX kicks and double check for
+             * more available descriptors. */
+            if (can_send == NULL) {
+                break;
+            }
             vring_packed_notification(vq, /*enable=*/1);
             __atomic_thread_fence(__ATOMIC_SEQ_CST);
             if (!vring_packed_more_avail(vq)) {
@@ -238,26 +358,27 @@ vring_packed_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
          * means that we processed descriptor out of order, which is not
          * the case here). This is specially useful to avoid a store-store
          * memory barrier. */
-        if (avail_idx != used_idx) {
+        if (unlikely(avail_idx != used_idx)) {
             vq->desc[used_idx] = vq->desc[avail_idx];
             __atomic_thread_fence(__ATOMIC_RELEASE);
         }
         vq->desc[used_idx].flags = vq->h.avail_used_flags;
 
         /* Advance avail and used indices. */
-        if (unlikely(++vq->h.next_avail_idx >= vq->num_desc)) {
-            vq->h.next_avail_idx = 0;
-            vq->h.avail_wrap_counter ^= 1;
-        }
-        if (unlikely(++vq->h.next_used_idx >= vq->num_desc)) {
-            vq->h.next_used_idx = 0;
-            vq->h.used_wrap_counter ^= 1;
-            vq->h.avail_used_flags ^= 1 << VRING_PACKED_DESC_F_AVAIL |
-                                      1 << VRING_PACKED_DESC_F_USED;
-        }
+        vring_packed_advance_avail(vq);
+        vring_packed_advance_used(vq);
 
         txq->stats.bufs++;
         count++;
+    }
+
+    if (count > 0) {
+        /* Flush previous writes to the descriptor flags, and
+         * then check if the peer needs to be notified. */
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        txq->notify = vring_packed_intr_needed(vq);
+        txq->stats.pkts += count;
+        txq->stats.batches++;
     }
 
     return count;
