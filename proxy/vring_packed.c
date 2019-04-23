@@ -2,6 +2,10 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <string.h>
+#include <sys/uio.h>
+#include <errno.h>
+#include <inttypes.h>
+#include <sys/types.h>
 
 #include "backend.h"
 #include "vring_packed.h"
@@ -63,6 +67,9 @@ vring_packed_init(struct vring_packed_virtq *vq, size_t num)
     vq->h.next_used_idx = 0;
     vq->h.avail_wrap_counter = 1;
     vq->h.used_wrap_counter = 1;
+    vq->h.avail_used_flags = 1 << VRING_PACKED_DESC_F_AVAIL |
+                             1 << VRING_PACKED_DESC_F_USED;
+
 
     vq->state_ofs = sizeof(struct vring_packed_virtq) + desc_size;
     vq->num_desc = num;
@@ -96,7 +103,7 @@ vring_packed_tx_ctx_init(struct bpfhv_tx_context *ctx, size_t num_tx_bufs)
 }
 
 static inline void
-__vring_packed_notification(struct vring_packed_virtq *vq, int enable)
+vring_packed_notification(struct vring_packed_virtq *vq, int enable)
 {
     vq->device_event.flags = enable ? VRING_PACKED_EVENT_FLAG_ENABLE
                                     : VRING_PACKED_EVENT_FLAG_DISABLE;
@@ -107,7 +114,7 @@ vring_packed_rxq_notification(struct bpfhv_rx_context *ctx, int enable)
 {
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
 
-    __vring_packed_notification(vq, enable);
+    vring_packed_notification(vq, enable);
 }
 
 static void
@@ -115,7 +122,7 @@ vring_packed_txq_notification(struct bpfhv_tx_context *ctx, int enable)
 {
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
 
-    __vring_packed_notification(vq, enable);
+    vring_packed_notification(vq, enable);
 }
 
 static void
@@ -152,10 +159,108 @@ vring_packed_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
     return 0;
 }
 
+static inline int
+vring_packed_more_avail(struct vring_packed_virtq *vq)
+{
+    uint16_t flags = vq->desc[vq->h.next_avail_idx].flags;
+    int avail, used;
+
+    avail = !!(flags & (1 << VRING_PACKED_DESC_F_AVAIL));
+    used = !!(flags & (1 << VRING_PACKED_DESC_F_USED));
+
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+
+    return avail != used && avail == vq->h.avail_wrap_counter;
+}
+
 static size_t
 vring_packed_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
 {
-    return 0;
+    struct bpfhv_tx_context *ctx = txq->ctx.tx;
+    struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
+    size_t count = 0;
+
+    if (can_send) {
+        /* Disable further kicks and start processing. */
+        vring_packed_notification(vq, /*enable=*/0);
+    }
+
+    for (;;) {
+        uint16_t avail_idx = vq->h.next_avail_idx;
+        uint16_t used_idx = vq->h.next_used_idx;
+        struct iovec iov;
+
+        if (!vring_packed_more_avail(vq)) {
+            vring_packed_notification(vq, /*enable=*/1);
+            __atomic_thread_fence(__ATOMIC_SEQ_CST);
+            if (!vring_packed_more_avail(vq)) {
+                break;
+            }
+            vring_packed_notification(vq, /*enable=*/0);
+        }
+
+        if (unlikely(count >= BPFHV_BE_TX_BUDGET)) {
+            break;
+        }
+
+        /* Get the next avail descriptor and process it. */
+        iov.iov_base = translate_addr(be, vq->desc[avail_idx].addr,
+                                      vq->desc[avail_idx].len);
+        iov.iov_len = vq->desc[avail_idx].len;
+        if (unlikely(iov.iov_base == NULL)) {
+            /* Invalid descriptor, just skip it. */
+            if (verbose) {
+                fprintf(stderr, "Invalid TX descriptor: gpa%"PRIx64", "
+                                "len %u\n", vq->desc[avail_idx].addr,
+                                vq->desc[avail_idx].len);
+            }
+        } else {
+            int ret = be->send(be, &iov, 1);
+
+            if (unlikely(ret <= 0)) {
+                /* Backend is blocked (or failed), so we need to stop.
+                 * The last packet was not transmitted, so we don't
+                 * increment 'avail_idx'. */
+                if (ret < 0) {
+                    if (can_send != NULL && errno == EAGAIN) {
+                        *can_send = 0;
+                    } else if (verbose) {
+                        fprintf(stderr, "send() failed: %s\n",
+                                strerror(errno));
+                    }
+                }
+                break;
+            }
+        }
+
+        /* Fill the next used descriptor and expose it. Don't rewrite the
+         * descriptor addr and len if not necessary (avail_idx != used_idx
+         * means that we processed descriptor out of order, which is not
+         * the case here). This is specially useful to avoid a store-store
+         * memory barrier. */
+        if (avail_idx != used_idx) {
+            vq->desc[used_idx] = vq->desc[avail_idx];
+            __atomic_thread_fence(__ATOMIC_RELEASE);
+        }
+        vq->desc[used_idx].flags = vq->h.avail_used_flags;
+
+        /* Advance avail and used indices. */
+        if (unlikely(++vq->h.next_avail_idx >= vq->num_desc)) {
+            vq->h.next_avail_idx = 0;
+            vq->h.avail_wrap_counter ^= 1;
+        }
+        if (unlikely(++vq->h.next_used_idx >= vq->num_desc)) {
+            vq->h.next_used_idx = 0;
+            vq->h.used_wrap_counter ^= 1;
+            vq->h.avail_used_flags ^= 1 << VRING_PACKED_DESC_F_AVAIL |
+                                      1 << VRING_PACKED_DESC_F_USED;
+        }
+
+        txq->stats.bufs++;
+        count++;
+    }
+
+    return count;
 }
 
 BeOps vring_packed_ops = {
