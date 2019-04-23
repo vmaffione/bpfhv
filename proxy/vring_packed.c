@@ -29,21 +29,29 @@ vring_packed_tx_check_alignment(void)
 }
 
 static size_t
-vring_packed_rx_ctx_size(size_t num_rx_bufs)
+vring_packed_priv_size(size_t num_bufs)
 {
-    size_t desc_size = ROUNDUP(sizeof(struct vring_packed_desc) * num_rx_bufs,
+    size_t desc_size = ROUNDUP(sizeof(struct vring_packed_desc) * num_bufs,
                                MY_CACHELINE_SIZE);
     size_t state_size = ROUNDUP(
-                    sizeof(struct vring_packed_desc_state) * num_rx_bufs,
+                    sizeof(struct vring_packed_desc_state) * num_bufs,
                     MY_CACHELINE_SIZE);
 
     return sizeof(struct vring_packed_virtq) + desc_size + state_size;
 }
 
 static size_t
+vring_packed_rx_ctx_size(size_t num_rx_bufs)
+{
+    return sizeof(struct bpfhv_rx_context)
+            + vring_packed_priv_size(num_rx_bufs);
+}
+
+static size_t
 vring_packed_tx_ctx_size(size_t num_tx_bufs)
 {
-    return vring_packed_rx_ctx_size(num_tx_bufs);
+    return sizeof(struct bpfhv_tx_context)
+            + vring_packed_priv_size(num_tx_bufs);
 }
 
 static inline void
@@ -62,7 +70,7 @@ vring_packed_init(struct vring_packed_virtq *vq, size_t num)
     struct vring_packed_desc_state *state;
     unsigned int i;
 
-    memset(vq, 0, vring_packed_rx_ctx_size(num));
+    memset(vq, 0, vring_packed_priv_size(num));
 
     vq->g.next_free_id = 0;
     vq->g.next_avail_idx = 0;
