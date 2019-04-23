@@ -77,6 +77,9 @@ typedef struct BeOps {
     void (*rxq_dump)(struct bpfhv_rx_context *ctx);
     void (*txq_dump)(struct bpfhv_tx_context *ctx);
 
+    /* Features supported by this device implementation. */
+    uint64_t features_avail;
+
     /* Path of the object file containing the ebpf programs. */
     char *progfile;
 } BeOps;
@@ -92,6 +95,9 @@ typedef struct BpfhvBackend {
 
     /* Backend type (tap, netmap). */
     const char *backend;
+
+    /* Device type (sring, sring_gso, ...). */
+    const char *device;
 
     /* Functions that process receive and transmit queues. */
     BeOps ops;

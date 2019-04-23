@@ -1353,6 +1353,7 @@ usage(const char *progname)
            "    -P PID_FILE\n"
            "    -i INTERFACE_NAME\n"
            "    -b BACKEND_TYPE (tap,sink,source,netmap)\n"
+           "    -d DEVICE_TYPE (sring,sring_gso,vring_packed)\n"
            "    -C (enable checksum offloads)\n"
            "    -G (enable TCP/UDP GSO offloads)\n"
            "    -B (run in busy-wait mode)\n"
@@ -1378,12 +1379,13 @@ main(int argc, char **argv)
     check_alignments();
 
     be.backend = "tap";
+    be.device = "sring";
     be.pidfile = NULL;
     be.busy_wait = 0;
     be.befd = -1;
     be.collect_stats = 0;
 
-    while ((opt = getopt(argc, argv, "hp:P:i:CGBvb:Su:")) != -1) {
+    while ((opt = getopt(argc, argv, "hp:P:i:CGBvb:Su:d:")) != -1) {
         switch (opt) {
         case 'h':
             usage(argv[0]);
@@ -1430,6 +1432,17 @@ main(int argc, char **argv)
                 return -1;
             }
             be.backend = optarg;
+            break;
+
+        case 'd':
+            if (strcmp(optarg, "sring")
+                    && strcmp(optarg, "sring_gso")
+                    && strcmp(optarg, "vring_packed")) {
+                fprintf(stderr, "Unknown device type '%s'\n", optarg);
+                usage(argv[0]);
+                return -1;
+            }
+            be.device = optarg;
             break;
 
         case 'S':
@@ -1482,6 +1495,33 @@ main(int argc, char **argv)
         return ret;
     }
 
+    /* Fix device type and offloads. */
+    if (!strcmp(be.device, "sring") && (csum || gso)) {
+        be.device = "sring_gso";
+    }
+    if (!strcmp(be.device, "vring_packed") && (csum || gso)) {
+        csum = gso = 0;
+    }
+
+    /* Select device type ops. */
+    if (!strcmp(be.device, "sring")) {
+        be.ops = sring_ops;
+    } else if (!strcmp(be.device, "sring_gso")) {
+        be.ops = sring_gso_ops;
+    } else if (!strcmp(be.device, "vring_packed")) {
+        be.ops = vring_packed_ops;
+    }
+    be.features_avail = be.ops.features_avail;
+    if (!csum) {
+        be.features_avail &= ~(BPFHV_F_SG | BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM);
+    }
+    if (!gso) {
+        be.features_avail &= ~(BPFHV_F_TSOv4 | BPFHV_F_TCPv4_LRO
+                             | BPFHV_F_TSOv6 | BPFHV_F_TCPv6_LRO
+                             | BPFHV_F_UFO   | BPFHV_F_UDP_LRO);
+    }
+
+    /* Select backend type. */
     be.vnet_hdr_len = (csum || gso) ?
         sizeof(struct virtio_net_hdr_v1) : 0;
     be.sync = NULL;
@@ -1568,17 +1608,12 @@ main(int argc, char **argv)
     }
 
     be.cfd = cfd;
-    be.features_avail = 0;
-    be.ops = sring_ops;
-    if (csum) {
-        be.features_avail = BPFHV_F_SG;
-        be.features_avail |= BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM;
-        if (gso) {
-            be.features_avail |= BPFHV_F_TSOv4 | BPFHV_F_TCPv4_LRO
-                              |  BPFHV_F_TSOv6 | BPFHV_F_TCPv6_LRO
-                              |  BPFHV_F_UFO   | BPFHV_F_UDP_LRO;
-            be.ops = sring_gso_ops;
-        }
+
+    if (verbose) {
+        printf("device  : %s\n", be.device);
+        printf("features: %"PRIx64"\n", be.features_avail);
+        printf("backend : %s\n", be.backend);
+        printf("vnethdr : %d\n", be.vnet_hdr_len);
     }
 
     ret = main_loop(&be);

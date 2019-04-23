@@ -397,5 +397,6 @@ BeOps vring_packed_ops = {
     .txq_drain = vring_packed_txq_drain,
     .rxq_dump = vring_packed_rxq_dump,
     .txq_dump = vring_packed_txq_dump,
+    .features_avail = 0,
     .progfile = "proxy/vring_packed_progs.o",
 };

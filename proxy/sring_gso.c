@@ -435,5 +435,9 @@ BeOps sring_gso_ops = {
     .txq_kicks = sring_gso_txq_notification,
     .rxq_dump = sring_gso_rxq_dump,
     .txq_dump = sring_gso_txq_dump,
+    .features_avail = BPFHV_F_SG | BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM
+                        | BPFHV_F_TSOv4 | BPFHV_F_TCPv4_LRO
+                        | BPFHV_F_TSOv6 | BPFHV_F_TCPv6_LRO
+                        | BPFHV_F_UFO   | BPFHV_F_UDP_LRO,
     .progfile = "proxy/sring_gso_progs.o",
 };

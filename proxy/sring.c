@@ -347,5 +347,6 @@ BeOps sring_ops = {
     .txq_kicks = sring_txq_notification,
     .rxq_dump = sring_rxq_dump,
     .txq_dump = sring_txq_dump,
+    .features_avail = 0,
     .progfile = "proxy/sring_progs.o",
 };
