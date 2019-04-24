@@ -68,7 +68,6 @@ vring_packed_kick_needed(struct vring_packed_virtq *vq)
         uint32_t u32;
     } device_event;
 
-    smp_mb_full();
     device_event.u32 = *((uint32_t *)(&vq->device_event));
 
     return (device_event.flags == VRING_PACKED_EVENT_FLAG_ENABLE);
@@ -85,6 +84,7 @@ int vring_packed_txp(struct bpfhv_tx_context *ctx)
     }
 
     vring_packed_add(vq, txb, 0);
+    smp_mb_full();
     ctx->oflags = vring_packed_kick_needed(vq) ? BPFHV_OFLAGS_KICK_NEEDED : 0;
 
     return 0;
@@ -98,8 +98,6 @@ vring_packed_more_used(struct vring_packed_virtq *vq)
 
     avail = !!(flags & (1 << VRING_PACKED_DESC_F_AVAIL));
     used = !!(flags & (1 << VRING_PACKED_DESC_F_USED));
-
-    smp_mb_acquire();
 
     return avail == used && used == vq->g.used_wrap_counter;
 }
@@ -161,6 +159,7 @@ int vring_packed_txc(struct bpfhv_tx_context *ctx)
     if (!vring_packed_more_used(vq)) {
         return 0;
     }
+    smp_mb_acquire();
 
     ret = vring_packed_get(vq, txb);
     if (ret == 1) {
@@ -222,6 +221,7 @@ int sring_rxp(struct bpfhv_rx_context *ctx)
         vring_packed_add(vq, rxb, VRING_DESC_F_WRITE);
 
     }
+    smp_mb_full();
     ctx->oflags = vring_packed_kick_needed(vq) ? BPFHV_OFLAGS_KICK_NEEDED : 0;
 
     return 0;
@@ -237,6 +237,7 @@ int sring_rxc(struct bpfhv_rx_context *ctx)
     if (!vring_packed_more_used(vq)) {
         return 0;
     }
+    smp_mb_acquire();
 
     ret = vring_packed_get(vq, rxb);
     if (ret != 1) {

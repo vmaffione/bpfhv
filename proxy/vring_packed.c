@@ -170,8 +170,6 @@ vring_packed_more_avail(struct vring_packed_virtq *vq)
     avail = !!(flags & (1 << VRING_PACKED_DESC_F_AVAIL));
     used = !!(flags & (1 << VRING_PACKED_DESC_F_USED));
 
-    __atomic_thread_fence(__ATOMIC_ACQUIRE);
-
     return avail != used && avail == vq->h.avail_wrap_counter;
 }
 
@@ -241,6 +239,7 @@ vring_packed_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
             break;
         }
 
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
         desc = vq->desc + avail_idx;
         iov.iov_base = translate_addr(be, desc->addr, desc->len);
         if (unlikely(avail_idx != used_idx)) {
@@ -330,6 +329,8 @@ vring_packed_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
         if (unlikely(count >= BPFHV_BE_TX_BUDGET)) {
             break;
         }
+
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
 
         /* Get the next avail descriptor and process it. */
         iov.iov_base = translate_addr(be, vq->desc[avail_idx].addr,
