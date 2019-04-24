@@ -134,7 +134,7 @@ struct vring_packed_virtq {
 struct vring_packed_desc_state *
 vring_packed_state(const struct vring_packed_virtq *vq)
 {
-    return (struct vring_packed_desc_state *)(((uintptr_t)vq) + vq->state_ofs);
+    return (struct vring_packed_desc_state *)(((char *)vq) + vq->state_ofs);
 }
 
 #endif  /* __BPFHV_VRING_PACKED_H__ */
