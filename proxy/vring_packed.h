@@ -90,7 +90,7 @@ struct vring_packed_desc_event {
 };
 
 struct vring_packed_virtq {
-    /* Producer private. */
+    /* Private to the guest. */
     struct {
         uint16_t next_free_id;
         uint16_t next_avail_idx;
@@ -100,7 +100,7 @@ struct vring_packed_virtq {
         uint16_t avail_used_flags;
     } g;
 
-    /* Consumer private. */
+    /* Private to the host. */
     MY_CACHELINE_ALIGNED
     struct {
         uint16_t next_avail_idx;
@@ -117,17 +117,20 @@ struct vring_packed_virtq {
     uint64_t state_ofs;
     uint32_t num_desc;
 
+    /* Notification suppression information. Shared, owned by the guest. */
     MY_CACHELINE_ALIGNED
     struct vring_packed_desc_event driver_event;
 
+    /* Notification suppression information. Shared, owned by the host. */
     MY_CACHELINE_ALIGNED
     struct vring_packed_desc_event device_event;
 
+    /* Shared, both guest and host can write. */
     MY_CACHELINE_ALIGNED
     struct vring_packed_desc desc[0];
-/*
- *  struct vring_packed_desc_state state[0];
- */
+
+    /* Private to the guest. */
+//  struct vring_packed_desc_state state[0];
 };
 
 /* Only valid after initialization. */
