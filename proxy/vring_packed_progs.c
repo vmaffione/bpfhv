@@ -264,7 +264,7 @@ int sring_rxr(struct bpfhv_rx_context *ctx)
         return 0;
     }
 
-    for (i = 0; i < BPFHV_MAX_RX_BUFS; i++) {
+    for (i = 0; i < BPFHV_MAX_RX_BUFS && vring_packed_more_pending(vq); i++) {
         struct bpfhv_buf *rxb = ctx->bufs + i;
         int ret;
 
@@ -273,10 +273,6 @@ int sring_rxr(struct bpfhv_rx_context *ctx)
             if (i == 0) {
                 return ret;
             }
-            break;
-        }
-
-        if (!vring_packed_more_pending(vq)) {
             break;
         }
     }
