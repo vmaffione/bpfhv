@@ -118,8 +118,11 @@ vring_packed_more_pending(struct vring_packed_virtq *vq)
     return avail != used && used != vq->g.used_wrap_counter;
 }
 
+/* Consume the next used entry. It is up to the caller to check that
+ * we can actually do that. This returns -1 in case of error, and
+ * 1 in case of success (since it is more convenient for the caller). */
 static inline int
-vring_packed_get(struct vring_packed_virtq *vq, struct bpfhv_buf *txb)
+vring_packed_get(struct vring_packed_virtq *vq, struct bpfhv_buf *b)
 {
     struct vring_packed_desc_state *state = vring_packed_state(vq);
     uint16_t used_idx;
@@ -131,9 +134,9 @@ vring_packed_get(struct vring_packed_virtq *vq, struct bpfhv_buf *txb)
         return -1;  /* This is a bug. */
     }
 
-    txb->cookie = state[id].cookie;
-    txb->paddr = vq->desc[used_idx].addr;
-    txb->len = vq->desc[used_idx].len;
+    b->cookie = state[id].cookie;
+    b->paddr = vq->desc[used_idx].addr;
+    b->len = vq->desc[used_idx].len;
 
     state[id].busy = 0;
     state[id].next = vq->g.next_free_id;
@@ -145,7 +148,7 @@ vring_packed_get(struct vring_packed_virtq *vq, struct bpfhv_buf *txb)
     }
     vq->g.next_used_idx = used_idx;
 
-    return 0;
+    return 1;
 }
 
 __section("txc")
@@ -160,7 +163,7 @@ int vring_packed_txc(struct bpfhv_tx_context *ctx)
     }
 
     ret = vring_packed_get(vq, txb);
-    if (ret == 0) {
+    if (ret == 1) {
         ctx->num_bufs = 1;
         ctx->oflags = 0;
     }
@@ -180,7 +183,7 @@ int sring_txr(struct bpfhv_tx_context *ctx)
     }
 
     ret = vring_packed_get(vq, txb);
-    if (ret == 0) {
+    if (ret == 1) {
         ctx->num_bufs = 1;
         ctx->oflags = 0;
     }
@@ -236,17 +239,19 @@ int sring_rxc(struct bpfhv_rx_context *ctx)
     }
 
     ret = vring_packed_get(vq, rxb);
-    if (ret == 0) {
-        ctx->num_bufs = 1;
-        ctx->oflags = 0;
-
-        ret = rx_pkt_alloc(ctx);
-        if (ret < 0) {
-            return ret;
-        }
+    if (ret != 1) {
+        return ret;
     }
 
-    return ret;
+    ctx->num_bufs = 1;
+    ctx->oflags = 0;
+
+    ret = rx_pkt_alloc(ctx);
+    if (ret < 0) {
+        return ret;
+    }
+
+    return 1;
 }
 
 __section("rxr")
@@ -264,7 +269,7 @@ int sring_rxr(struct bpfhv_rx_context *ctx)
         int ret;
 
         ret = vring_packed_get(vq, rxb);
-        if (ret) {
+        if (ret < 0) {
             if (i == 0) {
                 return ret;
             }
