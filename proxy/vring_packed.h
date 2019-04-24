@@ -1,6 +1,6 @@
 /*
  * BPFHV paravirtual network device
- *   Definitions shared between the sring eBPF programs and the
+ *   Definitions shared between the vring_packed eBPF programs and the
  *   vring_packed hv implementation.
  *
  * Copyright (c) 2018 Vincenzo Maffione <v.maffione@gmail.com>

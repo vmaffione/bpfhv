@@ -169,7 +169,7 @@ int vring_packed_txc(struct bpfhv_tx_context *ctx)
 }
 
 __section("txr")
-int sring_txr(struct bpfhv_tx_context *ctx)
+int vring_packed_txr(struct bpfhv_tx_context *ctx)
 {
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
     struct bpfhv_buf *txb = ctx->bufs + 0;
@@ -189,7 +189,7 @@ int sring_txr(struct bpfhv_tx_context *ctx)
 }
 
 __section("txi")
-int sring_txi(struct bpfhv_tx_context *ctx)
+int vring_packed_txi(struct bpfhv_tx_context *ctx)
 {
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
     uint16_t used_wrap_counter = vq->g.used_wrap_counter;
@@ -229,7 +229,7 @@ int sring_txi(struct bpfhv_tx_context *ctx)
 }
 
 __section("rxp")
-int sring_rxp(struct bpfhv_rx_context *ctx)
+int vring_packed_rxp(struct bpfhv_rx_context *ctx)
 {
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
     unsigned int i;
@@ -251,7 +251,7 @@ int sring_rxp(struct bpfhv_rx_context *ctx)
 }
 
 __section("rxc")
-int sring_rxc(struct bpfhv_rx_context *ctx)
+int vring_packed_rxc(struct bpfhv_rx_context *ctx)
 {
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
     struct bpfhv_buf *rxb = ctx->bufs + 0;
@@ -279,7 +279,7 @@ int sring_rxc(struct bpfhv_rx_context *ctx)
 }
 
 __section("rxr")
-int sring_rxr(struct bpfhv_rx_context *ctx)
+int vring_packed_rxr(struct bpfhv_rx_context *ctx)
 {
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
     unsigned int i;
@@ -308,7 +308,7 @@ int sring_rxr(struct bpfhv_rx_context *ctx)
 }
 
 __section("rxi")
-int sring_rxi(struct bpfhv_rx_context *ctx)
+int vring_packed_rxi(struct bpfhv_rx_context *ctx)
 {
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
 
