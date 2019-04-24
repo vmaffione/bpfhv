@@ -229,7 +229,7 @@ vring_packed_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
     size_t count = 0;
 
-    if (unlikely(vq->h.device_event_flags != VRING_PACKED_EVENT_FLAG_ENABLE)) {
+    if (unlikely(vq->h.device_event_flags != VRING_PACKED_EVENT_FLAG_DISABLE)) {
         vring_packed_notification(vq, /*enable=*/0);
     }
 
