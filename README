@@ -10,23 +10,26 @@ The external backend provides the queue processing functionalities
 for a single bpfhv device that belongs to a QEMU VM. In other words,
 QEMU only implements the control functionalities of the device, while
 RX and TX queues are processed by the external process. Similarly
-to vhost-user, QEMU and the external backend process use a control
-to exchange some information needed for the packet processing tasks
-(e.g. guest memory map, addresses of each TX and RX queue, file
-descriptors for notifications, etc.).
+to vhost-user, QEMU and the external backend process use a dedicated
+control channel to exchange some information needed for the packet
+processing tasks (e.g. guest memory map, addresses of each TX and RX
+queue, file descriptors for notifications, etc.).
 Files:
     - backend.c: main file, implements the control protocol and
                  two packet processing loops (the first one is
                  a poll() event loop, whereas the second one uses
                  busy-wait;
-    - sring.[ch]: hv implementation of a device subclass which uses
-                  a minimal descriptor format, with no support for
-                  offloads (and reduced per-packet overhead);
-    - sring_progs.c: eBPF programs for the sring device subclass
-    - sring_gso.[cg]: hv implementation of a device subclass which
-                  uses and extended descriptor format, supporting
-                  checksum offloads and TCP/UDP segmentation offloads;
-    - sring_gso_progs.c: eBPF programs for the sring_gso subclass
+    - sring.[ch]: hv implementation of a device which uses a minimal
+                  descriptor format, with no support for offloads (and
+                  reduced per-packet overhead);
+    - sring_progs.c: eBPF programs for the sring device;
+    - sring_gso.[ch]: hv implementation of a device which uses an
+                      extended descriptor format, supporting checksum
+                      offloads and TCP/UDP segmentation offloads;
+    - sring_gso_progs.c: eBPF programs for the sring_gso device
+    - vring_packed.[ch]: hv implementation of the packed virtqueue
+                         in the VirtIO 1.1 specification;
+    - vring_packed_progs.c: eBPF programs for the vring_packed device;
     - start-qemu.sh: an example script to start a QEMU VM with a
                      bpfhv device peered with a bpfhv-proxy network
                      backend;
@@ -36,15 +39,15 @@ Files:
 
 
 === Some advantages of bpfhv ===
-    - Have doorbells on separate pages (configurable stride?)
+    - Have doorbells on separate pages (configurable stride)
     - Provider can evolve the medatata header (e.g., virtio-net)
       to balance between the needs of FreeBSD and Linux.
       (virtio-net is good for Linux, but not for FreeBSD).
     - Virtio 1.1 vs 1.0 (while 0.95 is still around). This is a
-      sign that there is a need for evolution and compatbility
+      sign that there is a need for evolution and compatibility
       problems.
     - You can define a metadata format (e.g. virtio-net header)
-      that fits the specific hardware NIC features used by a
+      that fits the specific hardware NIC features used by the
       cloud provider.
     - Let the provider inject code to encrypt/decrypt the payload,
       together with the hardcoded key. The encrypt/decrypt routines
