@@ -147,6 +147,45 @@ vring_packed_get(struct vring_packed_virtq *vq, struct bpfhv_buf *b)
     return 1;
 }
 
+static inline int
+vring_packed_intr(struct vring_packed_virtq *vq, uint16_t min_completed_bufs)
+{
+    uint16_t used_wrap_counter = vq->g.used_wrap_counter;
+    union vring_packed_desc_event driver_event;
+    uint16_t used_idx = vq->g.next_used_idx;
+
+    if (min_completed_bufs == 0) {
+        vq->driver_event.flags = VRING_PACKED_EVENT_FLAG_DISABLE;
+        return 0;
+    }
+
+    if (min_completed_bufs > vq->num_desc) {
+        return -1;
+    }
+
+    used_idx += min_completed_bufs - 1;
+    if (used_idx >= vq->num_desc) {
+        used_idx -= vq->num_desc;
+        used_wrap_counter ^= 1;
+    }
+
+    driver_event.off_wrap = used_idx |
+        (used_wrap_counter << VRING_PACKED_EVENT_F_WRAP_CTR);
+    /* Make sure the update to the off_wrap field is visible before the update
+     * to the flags field. */
+    driver_event.flags = VRING_PACKED_EVENT_FLAG_DESC;
+
+    /* Use a single (atomic) store to write to vq->driver_event. Using two
+     * stores would require a release barrier, because we need to guarantee
+     * that the update to the flags field is not visible before the update
+     * to the off_wrap field. */
+    vq->driver_event.u32 = driver_event.u32;
+
+    smp_mb_full();
+
+    return vring_packed_desc_is_used(vq, used_idx, used_wrap_counter);
+}
+
 __section("txc")
 int vring_packed_txc(struct bpfhv_tx_context *ctx)
 {
@@ -192,40 +231,8 @@ __section("txi")
 int vring_packed_txi(struct bpfhv_tx_context *ctx)
 {
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
-    uint16_t used_wrap_counter = vq->g.used_wrap_counter;
-    union vring_packed_desc_event driver_event;
-    uint16_t used_idx = vq->g.next_used_idx;
 
-    if (ctx->min_completed_bufs == 0) {
-        vq->driver_event.flags = VRING_PACKED_EVENT_FLAG_DISABLE;
-        return 0;
-    }
-
-    if (ctx->min_completed_bufs > vq->num_desc) {
-        return -1;
-    }
-
-    used_idx += ctx->min_completed_bufs;
-    if (used_idx >= vq->num_desc) {
-        used_idx -= vq->num_desc;
-        used_wrap_counter ^= 1;
-    }
-
-    driver_event.off_wrap = used_idx |
-        (used_wrap_counter << VRING_PACKED_EVENT_F_WRAP_CTR);
-    /* Make sure the update to the off_wrap field is visible before the update
-     * to the flags field. */
-    driver_event.flags = VRING_PACKED_EVENT_FLAG_DESC;
-
-    /* Use a single (atomic) store to write to vq->driver_event. Using two
-     * stores would require a release barrier, because we need to guarantee
-     * that the update to the flags field is not visible before the update
-     * to the off_wrap field. */
-    vq->driver_event.u32 = driver_event.u32;
-
-    smp_mb_full();
-
-    return vring_packed_desc_is_used(vq, used_idx, used_wrap_counter);
+    return vring_packed_intr(vq, ctx->min_completed_bufs);
 }
 
 __section("rxp")
