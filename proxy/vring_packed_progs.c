@@ -193,6 +193,7 @@ int sring_txi(struct bpfhv_tx_context *ctx)
 {
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
     uint16_t used_wrap_counter = vq->g.used_wrap_counter;
+    union vring_packed_desc_event driver_event;
     uint16_t used_idx = vq->g.next_used_idx;
 
     if (ctx->min_completed_bufs == 0) {
@@ -210,13 +211,17 @@ int sring_txi(struct bpfhv_tx_context *ctx)
         used_wrap_counter ^= 1;
     }
 
-    vq->driver_event.off_wrap = used_idx |
+    driver_event.off_wrap = used_idx |
         (used_wrap_counter << VRING_PACKED_EVENT_F_WRAP_CTR);
-
     /* Make sure the update to the off_wrap field is visible before the update
      * to the flags field. */
-    smp_mb_release();
-    vq->driver_event.flags = VRING_PACKED_EVENT_FLAG_DESC;
+    driver_event.flags = VRING_PACKED_EVENT_FLAG_DESC;
+
+    /* Use a single (atomic) store to write to vq->driver_event. Using two
+     * stores would require a release barrier, because we need to guarantee
+     * that the update to the flags field is not visible before the update
+     * to the off_wrap field. */
+    vq->driver_event.u32 = driver_event.u32;
 
     smp_mb_full();
 
