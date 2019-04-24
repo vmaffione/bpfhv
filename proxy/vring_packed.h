@@ -82,11 +82,14 @@ struct vring_packed_desc_state {
     uint16_t last;
 };
 
-struct vring_packed_desc_event {
-    /* Descriptor Ring Change Event Offset/Wrap Counter. */
-    uint16_t off_wrap;
-    /* Descriptor Ring Change Event Flags. */
-    uint16_t flags;
+union vring_packed_desc_event {
+    struct {
+        /* Descriptor Ring Change Event Offset/Wrap Counter. */
+        uint16_t off_wrap;
+        /* Descriptor Ring Change Event Flags. */
+        uint16_t flags;
+    };
+    uint32_t u32;
 };
 
 struct vring_packed_virtq {
@@ -119,11 +122,11 @@ struct vring_packed_virtq {
 
     /* Notification suppression information. Shared, owned by the guest. */
     MY_CACHELINE_ALIGNED
-    struct vring_packed_desc_event driver_event;
+    union vring_packed_desc_event driver_event;
 
     /* Notification suppression information. Shared, owned by the host. */
     MY_CACHELINE_ALIGNED
-    struct vring_packed_desc_event device_event;
+    union vring_packed_desc_event device_event;
 
     /* Shared, both guest and host can write. */
     MY_CACHELINE_ALIGNED
@@ -132,6 +135,16 @@ struct vring_packed_virtq {
     /* Private to the guest. */
 //  struct vring_packed_desc_state state[0];
 };
+
+/* Assuming a given event_idx value from the other side, if
+ * we have just incremented index from old_idx to new_idx,
+ * should we trigger an event? */
+static inline int
+vring_need_event(uint16_t old_idx, uint16_t event_idx, uint16_t new_idx)
+{
+        return (uint16_t)(new_idx - event_idx - 1) < (uint16_t)(new_idx - old_idx);
+}
+
 
 /* Only valid after initialization. */
 struct vring_packed_desc_state *

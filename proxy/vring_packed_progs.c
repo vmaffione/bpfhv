@@ -55,22 +55,12 @@ vring_packed_add(struct vring_packed_virtq *vq, struct bpfhv_buf *b,
     vq->desc[head_avail_idx].flags = head_flags;
 }
 
-/* Check if the hypervisor needs a notification. */
+/* Check if the hypervisor needs a notification. Support for event idx
+ * is not implemented here, because the hypervisor is not using it. */
 static inline int
 vring_packed_kick_needed(struct vring_packed_virtq *vq)
 {
-    /* TODO implement EVENT_IDX */
-    union {
-        struct {
-            uint16_t off_wrap;
-            uint16_t flags;
-        };
-        uint32_t u32;
-    } device_event;
-
-    device_event.u32 = *((uint32_t *)(&vq->device_event));
-
-    return (device_event.flags == VRING_PACKED_EVENT_FLAG_ENABLE);
+    return vq->device_event.flags == VRING_PACKED_EVENT_FLAG_ENABLE;
 }
 
 __section("txp")
@@ -91,15 +81,23 @@ int vring_packed_txp(struct bpfhv_tx_context *ctx)
 }
 
 static inline int
-vring_packed_more_used(struct vring_packed_virtq *vq)
+vring_packed_desc_is_used(struct vring_packed_virtq *vq, uint16_t used_idx,
+                          uint8_t used_wrap_counter)
 {
-    uint16_t flags = vq->desc[vq->g.next_used_idx].flags;
+    uint16_t flags = vq->desc[used_idx].flags;
     int avail, used;
 
     avail = !!(flags & (1 << VRING_PACKED_DESC_F_AVAIL));
     used = !!(flags & (1 << VRING_PACKED_DESC_F_USED));
 
-    return avail == used && used == vq->g.used_wrap_counter;
+    return avail == used && used == used_wrap_counter;
+}
+
+static inline int
+vring_packed_more_used(struct vring_packed_virtq *vq)
+{
+    return vring_packed_desc_is_used(vq, vq->g.next_used_idx,
+                                     vq->g.used_wrap_counter);
 }
 
 static inline int
@@ -194,15 +192,35 @@ __section("txi")
 int sring_txi(struct bpfhv_tx_context *ctx)
 {
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
+    uint16_t used_wrap_counter = vq->g.used_wrap_counter;
+    uint16_t used_idx = vq->g.next_used_idx;
 
     if (ctx->min_completed_bufs == 0) {
         vq->driver_event.flags = VRING_PACKED_EVENT_FLAG_DISABLE;
         return 0;
     }
-    vq->driver_event.flags = VRING_PACKED_EVENT_FLAG_ENABLE;
+
+    if (ctx->min_completed_bufs > vq->num_desc) {
+        return -1;
+    }
+
+    used_idx += ctx->min_completed_bufs;
+    if (used_idx >= vq->num_desc) {
+        used_idx -= vq->num_desc;
+        used_wrap_counter ^= 1;
+    }
+
+    vq->driver_event.off_wrap = used_idx |
+        (used_wrap_counter << VRING_PACKED_EVENT_F_WRAP_CTR);
+
+    /* Make sure the update to the off_wrap field is visible before the update
+     * to the flags field. */
+    smp_mb_release();
+    vq->driver_event.flags = VRING_PACKED_EVENT_FLAG_DESC;
+
     smp_mb_full();
 
-    return vring_packed_more_used(vq);
+    return vring_packed_desc_is_used(vq, used_idx, used_wrap_counter);
 }
 
 __section("rxp")

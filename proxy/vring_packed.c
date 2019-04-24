@@ -20,6 +20,8 @@ vring_packed_rx_check_alignment(void)
     assert(((uintptr_t)&vq->driver_event) % MY_CACHELINE_SIZE == 0);
     assert(((uintptr_t)&vq->device_event) % MY_CACHELINE_SIZE == 0);
     assert(((uintptr_t)&vq->desc[0]) % MY_CACHELINE_SIZE == 0);
+    assert(sizeof(vq->driver_event) == 4);
+    assert(sizeof(vq->device_event) == 4);
 }
 
 static void
@@ -91,7 +93,7 @@ vring_packed_init(struct vring_packed_virtq *vq, size_t num)
     vq->num_desc = num;
 
     vq->driver_event.flags = VRING_PACKED_EVENT_FLAG_ENABLE;
-    vq->driver_event.off_wrap = 0;
+    vq->driver_event.off_wrap = 1 << VRING_PACKED_EVENT_F_WRAP_CTR;
     vring_packed_notification(vq, /*enable=*/1);
     vq->device_event.off_wrap = 0;
 
@@ -194,9 +196,29 @@ vring_packed_advance_used(struct vring_packed_virtq *vq)
 }
 
 static inline int
-vring_packed_intr_needed(struct vring_packed_virtq *vq)
+vring_packed_intr_needed(struct vring_packed_virtq *vq, uint16_t num_consumed)
 {
-    return ACCESS_ONCE(vq->driver_event.flags) == VRING_PACKED_EVENT_FLAG_ENABLE;
+    uint16_t old_idx, event_idx, wrap_counter;
+    union vring_packed_desc_event driver_event;
+
+    /* Read off_wrap and flags with a single (atomic) load operation, to avoid
+     * a race condition that would require an acquire barrier. */
+    driver_event.u32 = vq->driver_event.u32;
+
+    if (driver_event.flags != VRING_PACKED_EVENT_FLAG_DESC) {
+        return driver_event.flags == VRING_PACKED_EVENT_FLAG_ENABLE;
+    }
+
+    /* Rebase the old used idx and the event idx in the frame of the current
+     * used idx, so that we can use the usual vring_need_event() macro. */
+    old_idx = vq->h.next_used_idx - num_consumed;
+    event_idx = driver_event.off_wrap & ~(1 << VRING_PACKED_EVENT_F_WRAP_CTR);
+    wrap_counter = driver_event.off_wrap >> VRING_PACKED_EVENT_F_WRAP_CTR;
+    if (wrap_counter != vq->h.used_wrap_counter) {
+        event_idx -= vq->num_desc;
+    }
+
+    return vring_need_event(old_idx, event_idx, vq->h.next_used_idx);
 }
 
 static size_t
@@ -284,7 +306,7 @@ vring_packed_rxq_push(BpfhvBackend *be, BpfhvBackendQueue *rxq,
         /* Store-load barrier to make sure stores to the descriptors
          * happen before the load from vq->driver_event */
         __atomic_thread_fence(__ATOMIC_SEQ_CST);
-        rxq->notify = vring_packed_intr_needed(vq);
+        rxq->notify = vring_packed_intr_needed(vq, count);
         rxq->stats.pkts += count;
         rxq->stats.batches++;
     }
@@ -385,7 +407,7 @@ vring_packed_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
         /* Flush previous writes to the descriptor flags, and
          * then check if the peer needs to be notified. */
         __atomic_thread_fence(__ATOMIC_SEQ_CST);
-        txq->notify = vring_packed_intr_needed(vq);
+        txq->notify = vring_packed_intr_needed(vq, count);
         txq->stats.pkts += count;
         txq->stats.batches++;
     }
