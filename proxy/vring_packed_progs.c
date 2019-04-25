@@ -319,12 +319,5 @@ int vring_packed_rxi(struct bpfhv_rx_context *ctx)
 {
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
 
-    if (ctx->min_completed_bufs == 0) {
-        vq->driver_event.flags = VRING_PACKED_EVENT_FLAG_DISABLE;
-        return 0;
-    }
-    vq->driver_event.flags = VRING_PACKED_EVENT_FLAG_ENABLE;
-    smp_mb_full();
-
-    return vring_packed_more_used(vq);
+    return vring_packed_intr(vq, ctx->min_completed_bufs);
 }
