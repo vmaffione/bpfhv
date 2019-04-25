@@ -139,12 +139,18 @@ vring_packed_txq_notification(struct bpfhv_tx_context *ctx, int enable)
 static void
 vring_packed_dump(struct vring_packed_virtq *vq, const char *suffix)
 {
-    printf("vringpacked.%s g.avl %u g.usd %u g.wrp %u:%u "
-            "h.avl %u h.usd %u h.wrp %u:%u\n",
+    printf("vringpacked.%s g.avl %u g.usd %u g.wrp %u:%u dri %u:%u:%u "
+            "h.avl %u h.usd %u h.wrp %u:%u dev %u:%u:%u\n",
             suffix, vq->g.next_avail_idx, vq->g.next_used_idx,
             vq->g.avail_wrap_counter, vq->g.used_wrap_counter,
+            vq->driver_event.flags,
+            vq->driver_event.off_wrap >> VRING_PACKED_EVENT_F_WRAP_CTR,
+            vq->driver_event.off_wrap & ~(1 << VRING_PACKED_EVENT_F_WRAP_CTR),
             vq->h.next_avail_idx, vq->h.next_used_idx,
-            vq->h.avail_wrap_counter, vq->h.used_wrap_counter);
+            vq->h.avail_wrap_counter, vq->h.used_wrap_counter,
+            vq->device_event.flags,
+            vq->device_event.off_wrap >> VRING_PACKED_EVENT_F_WRAP_CTR,
+            vq->device_event.off_wrap & ~(1 << VRING_PACKED_EVENT_F_WRAP_CTR));
 }
 
 static void
