@@ -139,6 +139,10 @@ struct bpfhv_txq {
 	 * more packets. */
 	size_t				tx_free_bufs;
 
+        /* The txp program asked for a kick, but the kick was delayed because
+         * skb->xmit_more is true. */
+        bool                            kick_pending;
+
 	/* Address of the doorbell to be used for guest-->hv notifications
 	 * on this queue. */
 	u32* __iomem			doorbell;
@@ -396,6 +400,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 		txq->bi = bi;
 		txq->idx = i;
+		txq->kick_pending = false;
 		netif_napi_add(netdev, &txq->napi, bpfhv_tx_poll,
 				NAPI_POLL_WEIGHT);
 		txq->doorbell = (u32* __iomem)(dbmmio_addr +
@@ -1587,8 +1592,8 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	struct bpfhv_txq *txq = bi->txqs + 0;
 	struct bpfhv_tx_context *ctx = txq->ctx;
 	unsigned int len = skb_headlen(skb);
+	bool xmit_more = skb->xmit_more;
 	struct device *dev = bi->dev;
-	bool kick = !skb->xmit_more;
 	unsigned int nr_frags;
 	unsigned int i;
 	unsigned int f;
@@ -1671,7 +1676,9 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	ret = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_PUBLISH], /*ctx=*/ctx);
 	netif_info(bi, tx_queued, bi->netdev,
 		"txp(%u bytes) --> %d\n", skb->len, ret);
-	kick &= ctx->oflags & BPFHV_OFLAGS_KICK_NEEDED;
+	if (ctx->oflags & BPFHV_OFLAGS_KICK_NEEDED) {
+		txq->kick_pending = true;
+	}
 
 	if (tx_napi) {
 		/* Enable the interrupts to clean the pending buffers once at
@@ -1702,7 +1709,8 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		}
 	}
 
-	if (kick) {
+	if (!xmit_more && txq->kick_pending) {
+		txq->kick_pending = false;
 		writel(0, txq->doorbell);
 	}
 
