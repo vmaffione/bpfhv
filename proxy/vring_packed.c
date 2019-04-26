@@ -92,7 +92,7 @@ vring_packed_init(struct vring_packed_virtq *vq, size_t num)
     vq->state_ofs = sizeof(struct vring_packed_virtq) + desc_size;
     vq->num_desc = num;
 
-    vq->driver_event.flags = VRING_PACKED_EVENT_FLAG_ENABLE;
+    vq->driver_event.flags = VRING_PACKED_EVENT_FLAG_DESC;
     vq->driver_event.off_wrap = 1 << VRING_PACKED_EVENT_F_WRAP_CTR;
     vring_packed_notification(vq, /*enable=*/1);
     vq->device_event.off_wrap = 0;
