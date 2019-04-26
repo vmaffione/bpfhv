@@ -59,9 +59,31 @@ vring_packed_tx_ctx_size(size_t num_tx_bufs)
 static inline void
 vring_packed_notification(struct vring_packed_virtq *vq, int enable)
 {
-    vq->device_event.flags = vq->h.device_event_flags =
-            enable ? VRING_PACKED_EVENT_FLAG_ENABLE
-                   : VRING_PACKED_EVENT_FLAG_DISABLE;
+    if (!enable) {
+        ACCESS_ONCE(vq->device_event.flags) = vq->h.device_event_flags =
+                            VRING_PACKED_EVENT_FLAG_DISABLE;
+    } else {
+#if 0
+        /* Enable this to let the host suppress guest --> host notifications
+         * using the simpler interrupt bit scheme, rather than the event idx
+         * feature. */
+        ACCESS_ONCE(vq->device_event.flags) = vq->h.device_event_flags =
+                            VRING_PACKED_EVENT_FLAG_ENABLE;
+#else
+        union vring_packed_desc_event device_event;
+
+        device_event.off_wrap = vq->h.next_avail_idx |
+            (vq->h.avail_wrap_counter << VRING_PACKED_EVENT_F_WRAP_CTR);
+        device_event.flags = VRING_PACKED_EVENT_FLAG_DESC;
+
+        /* Use a single (atomic) store to write to vq->device_event. Using two
+         * stores would require a release barrier, because we need to guarantee
+         * that the update to the flags field is not visible before the update
+         * to the off_wrap field. */
+        ACCESS_ONCE(vq->device_event.u32) = device_event.u32;
+        vq->h.device_event_flags = device_event.flags;
+#endif
+    }
 }
 
 static void
@@ -95,7 +117,6 @@ vring_packed_init(struct vring_packed_virtq *vq, size_t num)
     vq->driver_event.flags = VRING_PACKED_EVENT_FLAG_DESC;
     vq->driver_event.off_wrap = 1 << VRING_PACKED_EVENT_F_WRAP_CTR;
     vring_packed_notification(vq, /*enable=*/1);
-    vq->device_event.off_wrap = 0;
 
     state = vring_packed_state(vq);
     for (i = 0; i < num-1; i++) {

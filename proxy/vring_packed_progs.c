@@ -55,12 +55,31 @@ vring_packed_add(struct vring_packed_virtq *vq, struct bpfhv_buf *b,
     vq->desc[head_avail_idx].flags = head_flags;
 }
 
-/* Check if the hypervisor needs a notification. Support for event idx
- * is not implemented here, because the hypervisor is not using it. */
+/* Check if the hypervisor needs a notification. */
 static inline int
-vring_packed_kick_needed(struct vring_packed_virtq *vq)
+vring_packed_kick_needed(struct vring_packed_virtq *vq, uint16_t num_published)
 {
-    return vq->device_event.flags == VRING_PACKED_EVENT_FLAG_ENABLE;
+    uint16_t old_idx, event_idx, wrap_counter;
+    union vring_packed_desc_event device_event;
+
+    /* Read off_wrap and flags with a single (atomic) load operation, to avoid
+     * a race condition that would require an acquire barrier. */
+    device_event.u32 = ACCESS_ONCE(vq->device_event.u32);
+
+    if (device_event.flags != VRING_PACKED_EVENT_FLAG_DESC) {
+        return device_event.flags == VRING_PACKED_EVENT_FLAG_ENABLE;
+    }
+
+    /* Rebase the old avail idx and the event idx in the frame of the current
+     * avail idx, so that we can use the usual vring_need_event() macro. */
+    old_idx = vq->g.next_avail_idx - num_published;
+    event_idx = device_event.off_wrap & ~(1 << VRING_PACKED_EVENT_F_WRAP_CTR);
+    wrap_counter = device_event.off_wrap >> VRING_PACKED_EVENT_F_WRAP_CTR;
+    if (wrap_counter != vq->g.avail_wrap_counter) {
+        event_idx -= vq->num_desc;
+    }
+
+    return vring_need_event(old_idx, event_idx, vq->g.next_avail_idx);
 }
 
 __section("txp")
@@ -75,7 +94,7 @@ int vring_packed_txp(struct bpfhv_tx_context *ctx)
 
     vring_packed_add(vq, txb, 0);
     smp_mb_full();
-    ctx->oflags = vring_packed_kick_needed(vq) ? BPFHV_OFLAGS_KICK_NEEDED : 0;
+    ctx->oflags = vring_packed_kick_needed(vq, 1) ? BPFHV_OFLAGS_KICK_NEEDED : 0;
 
     return 0;
 }
@@ -250,7 +269,7 @@ int vring_packed_rxp(struct bpfhv_rx_context *ctx)
 
     }
     smp_mb_full();
-    ctx->oflags = vring_packed_kick_needed(vq) ? BPFHV_OFLAGS_KICK_NEEDED : 0;
+    ctx->oflags = vring_packed_kick_needed(vq, i) ? BPFHV_OFLAGS_KICK_NEEDED : 0;
 
     return 0;
 }
