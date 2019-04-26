@@ -171,8 +171,6 @@ vring_packed_intr(struct vring_packed_virtq *vq, uint16_t min_completed_bufs)
 
     driver_event.off_wrap = used_idx |
         (used_wrap_counter << VRING_PACKED_EVENT_F_WRAP_CTR);
-    /* Make sure the update to the off_wrap field is visible before the update
-     * to the flags field. */
     driver_event.flags = VRING_PACKED_EVENT_FLAG_DESC;
 
     /* Use a single (atomic) store to write to vq->driver_event. Using two
