@@ -83,3 +83,6 @@ Files:
       and the MemoryRegionCache library. This should be only necessary
       if the guest platform has an IOMMU.
       Code in virtqueue_pop() and virtqueue_push().
+
+    - let backend.ops.init fail (vring packed < 2^15)
+    - move vring_packed generic code at the top of the files

@@ -344,6 +344,17 @@ process_packets_poll(BpfhvBackend *be)
         }
         poll_timeout = -1;
 
+        /* Drain transmit and receive kickfds if needed. */
+        for (i = 0; i < be->num_queues; i++) {
+            if (pfd[i].revents & POLLIN) {
+                be->q[i].stats.kicks++;
+                if (unlikely(very_verbose)) {
+                    printf("Kick on %s\n", be->q[i].name);
+                }
+                eventfd_drain(pfd[i].fd);
+            }
+        }
+
         /* Receive any packets from the TAP interface and push them to
          * the first (and unique) RXQ. */
         {
@@ -391,17 +402,6 @@ process_packets_poll(BpfhvBackend *be)
             }
             if (unlikely(very_verbose && count > 0)) {
                 ops.txq_dump(ctx);
-            }
-        }
-
-        /* Drain transmit and receive kickfds if needed. */
-        for (i = 0; i < be->num_queues; i++) {
-            if (pfd[i].revents & POLLIN) {
-                be->q[i].stats.kicks++;
-                if (unlikely(very_verbose)) {
-                    printf("Kick on %s\n", be->q[i].name);
-                }
-                eventfd_drain(pfd[i].fd);
             }
         }
 
