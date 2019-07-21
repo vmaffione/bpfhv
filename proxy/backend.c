@@ -34,6 +34,11 @@ int verbose = 0;
 #define TXI_BEGIN(_s)   (_s)->num_queue_pairs
 #define TXI_END(_s)     (_s)->num_queues
 
+#define OPT_TXCSUM      (1 << 0)
+#define OPT_RXCSUM      (1 << 1)
+#define OPT_TSO         (1 << 2)
+#define OPT_LRO         (1 << 3)
+
 /* Main data structure. */
 static BpfhvBackend be;
 
@@ -1271,7 +1276,7 @@ send_resp:
 }
 
 static int
-tap_alloc(const char *ifname, int vnet_hdr_len, int csum, int gso)
+tap_alloc(const char *ifname, int vnet_hdr_len, int opt_offload)
 {
     unsigned int offloads = 0;
     struct ifreq ifr;
@@ -1293,7 +1298,7 @@ tap_alloc(const char *ifname, int vnet_hdr_len, int csum, int gso)
     memset(&ifr, 0, sizeof(ifr));
     /* IFF_TAP, IFF_TUN, IFF_NO_PI, IFF_VNET_HDR */
     ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
-    if (csum || gso) {
+    if (opt_offload) {
         ifr.ifr_flags |= IFF_VNET_HDR;
     }
     strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
@@ -1308,16 +1313,16 @@ tap_alloc(const char *ifname, int vnet_hdr_len, int csum, int gso)
         return err;
     }
 
-    if (csum || gso) {
+    if (opt_offload) {
         err = ioctl(fd, TUNSETVNETHDRSZ, &vnet_hdr_len);
         if (err < 0) {
             fprintf(stderr, "ioctl(befd, TUNSETIFF) failed: %s\n",
                     strerror(errno));
         }
 
-        if (csum) {
+        if (opt_offload & OPT_RXCSUM) {
             offloads |= TUN_F_CSUM;
-            if (gso) {
+            if (opt_offload & OPT_LRO) {
                 offloads |= TUN_F_TSO4 | TUN_F_TSO6 | TUN_F_UFO;
             }
         }
@@ -1353,7 +1358,8 @@ usage(const char *progname)
            "    -i INTERFACE_NAME\n"
            "    -b BACKEND_TYPE (tap,sink,source,netmap)\n"
            "    -d DEVICE_TYPE (sring,sring_gso,vring_packed)\n"
-           "    -C (enable checksum offloads)\n"
+           "    -O OFFLOAD (txcsum,rxcsum,tso,lro)\n"
+           "    -C (enable TX/RX checksum offloads)\n"
            "    -G (enable TCP/UDP GSO offloads)\n"
            "    -B (run in busy-wait mode)\n"
            "    -S (show run-time statistics)\n"
@@ -1369,8 +1375,7 @@ main(int argc, char **argv)
     const char *ifname = "tapx";
     const char *path = NULL;
     struct sigaction sa;
-    int csum = 0;
-    int gso = 0;
+    int opt_offload = 0;
     int opt;
     int cfd;
     int ret;
@@ -1384,7 +1389,7 @@ main(int argc, char **argv)
     be.befd = -1;
     be.collect_stats = 0;
 
-    while ((opt = getopt(argc, argv, "hp:P:i:CGBvb:Su:d:")) != -1) {
+    while ((opt = getopt(argc, argv, "hp:P:i:CGBvb:Su:d:O:")) != -1) {
         switch (opt) {
         case 'h':
             usage(argv[0]);
@@ -1407,12 +1412,39 @@ main(int argc, char **argv)
             break;
 
         case 'C':
-            csum = 1;
+            opt_offload |= OPT_TXCSUM | OPT_RXCSUM;
             break;
 
         case 'G':
-            gso = csum = 1;
+            opt_offload |= OPT_TXCSUM | OPT_RXCSUM | OPT_TSO | OPT_LRO;
             break;
+
+        case 'O': {
+            char *s = optarg;
+            char *token;
+
+            for (;;) {
+                token = strtok(s, ",");
+                if (token == NULL) {
+                    break;
+                }
+                s = NULL;
+                if (!strcmp(token, "tso")) {
+                    opt_offload |= OPT_TSO;
+                } else if (!strcmp(token, "lro")) {
+                    opt_offload |= OPT_LRO;
+                } else if (!strcmp(token, "txcsum")) {
+                    opt_offload |= OPT_TXCSUM;
+                } else if (!strcmp(token, "rxcsum")) {
+                    opt_offload |= OPT_RXCSUM;
+                } else {
+                    fprintf(stderr, "Unknown offload '%s'\n", token);
+                    usage(argv[0]);
+                    return -1;
+                }
+            }
+            break;
+        }
 
         case 'B':
             be.busy_wait = 1;
@@ -1500,11 +1532,11 @@ main(int argc, char **argv)
     }
 
     /* Fix device type and offloads. */
-    if (!strcmp(be.device, "sring") && (csum || gso)) {
+    if (!strcmp(be.device, "sring") && (opt_offload)) {
         be.device = "sring_gso";
     }
-    if (!strcmp(be.device, "vring_packed") && (csum || gso)) {
-        csum = gso = 0;
+    if (!strcmp(be.device, "vring_packed") && (opt_offload)) {
+        opt_offload = 0;
     }
 
     /* Select device type ops. */
@@ -1516,22 +1548,33 @@ main(int argc, char **argv)
         be.ops = vring_packed_ops;
     }
     be.features_avail = be.ops.features_avail;
-    if (!csum) {
-        be.features_avail &= ~(BPFHV_F_SG | BPFHV_F_TX_CSUM | BPFHV_F_RX_CSUM);
+    if (!(opt_offload & OPT_TXCSUM)) {
+        be.features_avail &= ~(BPFHV_F_TX_CSUM);
     }
-    if (!gso) {
-        be.features_avail &= ~(BPFHV_F_TSOv4 | BPFHV_F_TCPv4_LRO
-                             | BPFHV_F_TSOv6 | BPFHV_F_TCPv6_LRO
-                             | BPFHV_F_UFO   | BPFHV_F_UDP_LRO);
+    if (!(opt_offload & OPT_RXCSUM)) {
+        be.features_avail &= ~(BPFHV_F_RX_CSUM);
+    }
+    if (!(opt_offload & (OPT_TXCSUM | OPT_RXCSUM))) {
+        be.features_avail &= ~(BPFHV_F_SG);
+    }
+    if (!(opt_offload & OPT_TSO)) {
+        be.features_avail &= ~(BPFHV_F_TSOv4
+                             | BPFHV_F_TSOv6
+                             | BPFHV_F_UFO);
+    }
+    if (!(opt_offload & OPT_LRO)) {
+        be.features_avail &= ~(BPFHV_F_TCPv4_LRO
+                             | BPFHV_F_TCPv6_LRO
+                             | BPFHV_F_UDP_LRO);
     }
 
     /* Select backend type. */
-    be.vnet_hdr_len = (csum || gso) ?
+    be.vnet_hdr_len = (opt_offload) ?
         sizeof(struct virtio_net_hdr_v1) : 0;
     be.sync = NULL;
     if (!strcmp(be.backend, "tap")) {
         /* Open a TAP device to use as network backend. */
-        be.befd = tap_alloc(ifname, be.vnet_hdr_len, csum, gso);
+        be.befd = tap_alloc(ifname, be.vnet_hdr_len, opt_offload);
         if (be.befd < 0) {
             fprintf(stderr, "Failed to allocate TAP device\n");
             return -1;
