@@ -36,7 +36,7 @@ BESRCS=proxy/backend.c proxy/sring.c proxy/sring_gso.c proxy/vring_packed.c
 BEHDRS=include/bpfhv-proxy.h include/bpfhv.h proxy/sring.h proxy/sring_gso.h proxy/vring_packed.h proxy/backend.h
 
 proxy/backend: $(BESRCS) $(BEHDRS)
-	$(CC) -O2 -g -Wall -Werror -I @SRCDIR@/include $(DEFS) -o $@ $(BESRCS) $(LIBS)
+	$(CC) -O2 -g -Wall -Werror -Wno-address-of-packed-member -I @SRCDIR@/include $(DEFS) -o $@ $(BESRCS) $(LIBS)
 
 proxy/sring_progs.o: proxy/sring_progs.c proxy/sring.h include/bpfhv.h
 	clang -O2 -Wall -I @SRCDIR@/include -target bpf -c $< -o $@
