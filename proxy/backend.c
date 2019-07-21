@@ -1273,6 +1273,7 @@ send_resp:
 static int
 tap_alloc(const char *ifname, int vnet_hdr_len, int csum, int gso)
 {
+    unsigned int offloads = 0;
     struct ifreq ifr;
     int fd, err;
 
@@ -1308,8 +1309,6 @@ tap_alloc(const char *ifname, int vnet_hdr_len, int csum, int gso)
     }
 
     if (csum || gso) {
-        unsigned int offloads = 0;
-
         err = ioctl(fd, TUNSETVNETHDRSZ, &vnet_hdr_len);
         if (err < 0) {
             fprintf(stderr, "ioctl(befd, TUNSETIFF) failed: %s\n",
@@ -1322,12 +1321,12 @@ tap_alloc(const char *ifname, int vnet_hdr_len, int csum, int gso)
                 offloads |= TUN_F_TSO4 | TUN_F_TSO6 | TUN_F_UFO;
             }
         }
+    }
 
-        err = ioctl(fd, TUNSETOFFLOAD, offloads);
-        if (err < 0) {
-            fprintf(stderr, "ioctl(befd, TUNSETOFFLOAD) failed: %s\n",
-                    strerror(errno));
-        }
+    err = ioctl(fd, TUNSETOFFLOAD, offloads);
+    if (err < 0) {
+        fprintf(stderr, "ioctl(befd, TUNSETOFFLOAD) failed: %s\n",
+                strerror(errno));
     }
 
     return fd;
